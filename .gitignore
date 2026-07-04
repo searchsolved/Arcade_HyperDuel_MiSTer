@@ -1,0 +1,34 @@
+# build outputs
+obj_dir/
+*.vcd
+*.fst
+*.o
+*.d
+
+# Quartus
+output_files/
+db/
+incremental_db/
+*.qws
+*.rpt
+*.summary
+
+# ROMs are never committed
+*.zip
+*.bin
+*.rom
+roms/
+
+# macOS
+.DS_Store
+
+# sim outputs
+sim/build/
+
+# MAME runtime dirs (created by reference runs)
+cfg/
+nvram/
+snap/
+sta/
+inp/
+diff/
