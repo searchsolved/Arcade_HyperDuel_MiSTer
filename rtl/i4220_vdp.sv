@@ -45,6 +45,8 @@ module i4220_vdp #(
     output logic       o_hs,
     output logic       o_vs,
     output logic       o_de,
+    output logic       o_hblank,   // separate blanks for the MiSTer
+    output logic       o_vblank,   // framework (arcade_video)
     output logic       o_ce_pix,
     output logic [4:0] o_r, o_g, o_b,
 
@@ -699,20 +701,27 @@ module i4220_vdp #(
   logic [11:0] so_pen;
   logic [15:0] so_pal;
   logic        de0, de1;
+  logic        hb0, hb1, vb0, vb1;
 
   always_ff @(posedge clk) begin
     if (ce_pix) begin
       // stage 0: pen fetch for current hcnt (bank = the line just rendered)
       de0 <= (32'(hcnt) < H_VIS) && (32'(vcnt) < V_VIS);
+      hb0 <= !(32'(hcnt) < H_VIS);
+      vb0 <= !(32'(vcnt) < V_VIS);
       so_pen <= (32'(hcnt) < H_VIS) ? linebuf[vcnt[1:0]][hcnt[8:0] % 320] : 12'd0;
       // stage 1: palette lookup
       de1 <= de0;
+      hb1 <= hb0;
+      vb1 <= vb0;
       so_pal <= palette[so_pen];
       // stage 2: RGB out, aligned with de1 -> o_de
       o_r <= so_pal[10:6];
       o_g <= so_pal[15:11];
       o_b <= so_pal[5:1];
       o_de <= de1;
+      o_hblank <= hb1;
+      o_vblank <= vb1;
       o_hs <= (32'(hcnt) >= HS_BEG && 32'(hcnt) < HS_END);
       o_vs <= (32'(vcnt) >= VS_BEG && 32'(vcnt) < VS_END);
     end

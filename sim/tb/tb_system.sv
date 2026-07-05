@@ -39,20 +39,69 @@ module tb_system;
     if (audio != audio_d) audio_activity <= audio_activity + 1;
   end
 
+  // +SDRAM=1 routes all three ROM ports through hyprduel_sdram + the
+  // behavioral sdram_model instead of the ideal servers below.
+  int use_sdram;
+  initial if (!$value$plusargs("SDRAM=%d", use_sdram)) use_sdram = 0;
+
+  logic sdr_ready;
+  wire rst_n_sys = rst_n && (use_sdram == 0 || sdr_ready);
+
+  wire [15:0] mrom_data_mx  = (use_sdram != 0) ? ctl_mrom_data  : mrom_data;
+  wire        mrom_valid_mx = (use_sdram != 0) ? ctl_mrom_valid : mrom_valid;
+  wire [7:0]  oki_data_mx   = (use_sdram != 0) ? ctl_oki_data   : oki_data;
+  wire        oki_ok_mx     = (use_sdram != 0) ? ctl_oki_ok     : oki_ok;
+  wire [7:0]  rom_data_mx   = (use_sdram != 0) ? ctl_gfx_data   : rom_data;
+  wire        rom_valid_mx  = (use_sdram != 0) ? ctl_gfx_valid  : rom_valid;
+
   hyprduel_sys #(.GFX_AW(GFX_AW), .P_PIXDIV(16)) dut (
-    .clk(clk), .rst_n(rst_n),
+    .clk(clk), .rst_n(rst_n_sys),
     .o_hs(hs), .o_vs(vs), .o_de(de), .o_ce_pix(ce_pix),
+    .o_hblank(), .o_vblank(),
     .o_r(r5), .o_g(g5), .o_b(b5),
     .o_audio(audio),
     .i_p1p2(16'hFFFF), .i_system(16'hFFFF),
     .i_dsw(16'hFFBF), .i_service(16'hFFFF),  // dsw bit6=0: demo sounds ON
     .o_mrom_rd(mrom_rd), .o_mrom_addr(mrom_addr),
-    .i_mrom_data(mrom_data), .i_mrom_valid(mrom_valid),
-    .o_oki_addr(oki_addr), .i_oki_data(oki_data), .i_oki_ok(oki_ok),
+    .i_mrom_data(mrom_data_mx), .i_mrom_valid(mrom_valid_mx),
+    .o_oki_addr(oki_addr), .i_oki_data(oki_data_mx), .i_oki_ok(oki_ok_mx),
     .o_rom_req(rom_req), .o_rom_addr(rom_addr), .o_rom_len(rom_len),
-    .i_rom_data(rom_data), .i_rom_valid(rom_valid),
+    .i_rom_data(rom_data_mx), .i_rom_valid(rom_valid_mx),
     .i_gfx_size(24'(gfx_size)),
     .dbg_subctl(dbg_subctl), .dbg_sub_in_reset(dbg_subrst)
+  );
+
+  // SDRAM controller + behavioral model (active when +SDRAM=1)
+  logic [15:0] ctl_mrom_data;
+  logic        ctl_mrom_valid;
+  logic [7:0]  ctl_oki_data, ctl_gfx_data;
+  logic        ctl_oki_ok, ctl_gfx_valid;
+  wire  [12:0] sdr_a;
+  wire  [1:0]  sdr_ba;
+  wire  [15:0] sdr_dq;
+  wire         sdr_dqml, sdr_dqmh, sdr_ncs, sdr_nras, sdr_ncas, sdr_nwe, sdr_cke;
+
+  hyprduel_sdram #(.P_SHORT_INIT(1'b1)) u_sdr (
+    .clk(clk), .rst_n(rst_n), .o_ready(sdr_ready),
+    .i_gfx_req(rom_req && use_sdram != 0),
+    .i_gfx_addr(rom_addr), .i_gfx_len(rom_len),
+    .o_gfx_data(ctl_gfx_data), .o_gfx_valid(ctl_gfx_valid),
+    .i_mrom_rd(mrom_rd && use_sdram != 0), .i_mrom_addr(mrom_addr),
+    .o_mrom_data(ctl_mrom_data), .o_mrom_valid(ctl_mrom_valid),
+    .i_oki_addr(oki_addr),
+    .o_oki_data(ctl_oki_data), .o_oki_ok(ctl_oki_ok),
+    .i_dl_wr(1'b0), .i_dl_addr('0), .i_dl_data('0), .o_dl_busy(),
+    .SDRAM_A(sdr_a), .SDRAM_BA(sdr_ba), .SDRAM_DQ(sdr_dq),
+    .SDRAM_DQML(sdr_dqml), .SDRAM_DQMH(sdr_dqmh),
+    .SDRAM_nCS(sdr_ncs), .SDRAM_nRAS(sdr_nras), .SDRAM_nCAS(sdr_ncas),
+    .SDRAM_nWE(sdr_nwe), .SDRAM_CKE(sdr_cke)
+  );
+
+  sdram_model u_sdr_model (
+    .clk(clk), .A(sdr_a), .BA(sdr_ba), .DQ(sdr_dq),
+    .DQML(sdr_dqml), .DQMH(sdr_dqmh),
+    .nCS(sdr_ncs), .nRAS(sdr_nras), .nCAS(sdr_ncas), .nWE(sdr_nwe),
+    .CKE(sdr_cke)
   );
 
   // main ROM server: 2-cycle latency (SDRAM-ish)
@@ -327,6 +376,20 @@ module tb_system;
     if (!$value$plusargs("GFXSIZE=%d", gfx_size)) gfx_size = 1 << GFX_AW;
 
     $readmemh(gfxpath, gfxrom);
+
+    if (use_sdram != 0) begin
+      // populate the SDRAM model at the mister/README.md byte map;
+      // even byte address = word[15:8] (68000 lane convention)
+      for (int i = 0; i < 262144; i++) begin
+        u_sdr_model.mem_b[2*i]     = mainrom[i][15:8];
+        u_sdr_model.mem_b[2*i + 1] = mainrom[i][7:0];
+      end
+      for (int i = 0; i < gfx_size; i++)
+        u_sdr_model.mem_b[32'h080000 + i] = gfxrom[i];
+      for (int i = 0; i < 262144; i++)
+        u_sdr_model.mem_b[32'h480000 + i] = okirom[i];
+      $display("tb_system: SDRAM path enabled (controller + model)");
+    end
 
     rst_n = 0;
     repeat (32) @(posedge clk);

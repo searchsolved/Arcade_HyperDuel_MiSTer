@@ -18,6 +18,7 @@ module hyprduel_sys #(
 
     // video
     output logic       o_hs, o_vs, o_de, o_ce_pix,
+    output logic       o_hblank, o_vblank,
     output logic [4:0] o_r, o_g, o_b,
 
     // audio (signed mono mix, MAME weights: YM 0.80, OKI 0.57)
@@ -137,6 +138,7 @@ module hyprduel_sys #(
     .i_be({~m_udsn, ~m_ldsn}), .i_wdata(m_dout),
     .o_rdata(vdp_rdata), .o_ack(vdp_ack),
     .o_hs(o_hs), .o_vs(o_vs), .o_de(o_de), .o_ce_pix(o_ce_pix),
+    .o_hblank(o_hblank), .o_vblank(o_vblank),
     .o_r(o_r), .o_g(o_g), .o_b(o_b),
     .o_irq(vdp_irq), .o_vbl_pulse(vbl_pulse),
     .o_rom_req(o_rom_req), .o_rom_addr(o_rom_addr), .o_rom_len(o_rom_len),

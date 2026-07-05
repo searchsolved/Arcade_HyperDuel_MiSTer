@@ -56,6 +56,9 @@ module tb_vdp;
     .i_cs(cs), .i_addr(addr), .i_rnw(rnw), .i_be(be),
     .i_wdata(wdata), .o_rdata(rdata), .o_ack(ack),
     .o_hs(hs), .o_vs(vs), .o_de(de), .o_ce_pix(ce_pix),
+    /* verilator lint_off PINCONNECTEMPTY */
+    .o_hblank(), .o_vblank(),
+    /* verilator lint_on PINCONNECTEMPTY */
     .o_r(r5), .o_g(g5), .o_b(b5),
     .o_irq(irq), .o_vbl_pulse(vbl),
     .o_rom_req(rom_req), .o_rom_addr(rom_addr), .o_rom_len(rom_len),

@@ -26,7 +26,9 @@
     <rotation>horizontal</rotation>
     <region>Japan</region>
 
-    <switches default="ff,ff">
+    <!-- default bf,ff = the MAME default port value 0xFFBF
+         (bit6 low = Demo Sounds ON); bytes are the raw DSW readback -->
+    <switches default="bf,ff">
         <!-- DSW port, spec: docs/hyprduel_system_spec.md sec 6 -->
         <dip name="Coin A" bits="0,2"
              ids="4C/1C,3C/1C,2C/1C,1C/1C,1C/2C,1C/3C,1C/4C,Free Play"
