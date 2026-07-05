@@ -96,7 +96,9 @@ module hyprduel_sdram #(
 
   // initialized so the pins never show a live command (4'b0000 = MODE)
   // before the first clock edge
+  /* verilator lint_off PROCASSINIT */
   logic [3:0] cmd = CMD_NOP;
+  /* verilator lint_on PROCASSINIT */
   assign {SDRAM_nCS, SDRAM_nRAS, SDRAM_nCAS, SDRAM_nWE} = cmd;
   assign SDRAM_CKE = 1'b1;
 
@@ -152,6 +154,9 @@ module hyprduel_sdram #(
   // oki request detection: serve whenever addr differs from last served
   logic        oki_have;
   logic [17:0] oki_served;
+  logic [17:0] oki_fly;      // address of the in-flight OKI read: a new
+                             // request may relatch oki_addr_q before the
+                             // previous word lands (pend clears at CAS)
   wire oki_want = !oki_have || (i_oki_addr != oki_served);
 
   wire [9:0] col_room = 10'd512 - {1'b0, cur_word[8:0]};
@@ -282,6 +287,7 @@ module hyprduel_sdram #(
                         cur_word[8:0]};              // AP on the last CAS
             ret_tag[0] <= (owner == OWN_GFX)  ? 2'd1 :
                           (owner == OWN_MROM) ? 2'd2 : 2'd3;
+            if (owner == OWN_OKI) oki_fly <= oki_addr_q;
             cur_word <= cur_word + 24'd1;
             words_left <= words_left - 7'd1;
             cas_left <= cas_left - 6'd1;
@@ -330,8 +336,8 @@ module hyprduel_sdram #(
         o_mrom_valid <= 1'b1;
       end
       if (land_tag == 2'd3) begin
-        o_oki_data <= oki_addr_q[0] ? dq_in[7:0] : dq_in[15:8];
-        oki_served <= oki_addr_q;
+        o_oki_data <= oki_fly[0] ? dq_in[7:0] : dq_in[15:8];
+        oki_served <= oki_fly;
         oki_have <= 1'b1;
       end
     end

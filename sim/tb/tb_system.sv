@@ -238,6 +238,8 @@ module tb_system;
   bit         r14_vals[256];       // distinct values ever written to reg 0x14
   int         iack1_edges, iack2_edges, irq_falls, st_reads;
   logic [23:0] okiw_log [40];
+  int          oki_mism, oki_lat, oki_maxlat;
+  logic        oki_ok_d;
   logic [23:0] okir_log [20];
   int          okiw_n, okir_n;
   longint      oki_nz;
@@ -280,6 +282,16 @@ module tb_system;
     if (dut.sbst == 1 && dut.s_sel_snd && dut.s_rw && okir_n < 20) begin
       okir_log[okir_n] <= {16'(frames_seen), dut.oki_dout};
       okir_n <= okir_n + 1;
+    end
+    // SDRAM OKI client honesty checks
+    if (use_sdram != 0) begin
+      if (ctl_oki_ok && ctl_oki_data != okirom[oki_addr]) oki_mism <= oki_mism + 1;
+      oki_ok_d <= ctl_oki_ok;
+      if (!ctl_oki_ok) begin
+        oki_lat <= oki_lat + 1;
+        if (oki_lat + 1 > oki_maxlat) oki_maxlat <= oki_lat + 1;
+      end else
+        oki_lat <= 0;
     end
     if (dut.oki_snd != 0) begin
       oki_nz <= oki_nz + 1;
@@ -458,6 +470,8 @@ module tb_system;
     $write("\n");
     $display("oki: writes=%0d status_reads=%0d nz_samples=%0d first_nz_frame=%0d",
              okiw_n, okir_n, oki_nz, oki_first);
+    if (use_sdram != 0)
+      $display("oki sdram: data_mismatches=%0d max_ok_latency=%0d", oki_mism, oki_maxlat);
     for (int i = 0; i < okiw_n; i++)
       $display("  OKIW f=%0d val=%02x", okiw_log[i][23:8], okiw_log[i][7:0]);
     for (int i = 0; i < okir_n; i++)

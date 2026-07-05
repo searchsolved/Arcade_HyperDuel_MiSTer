@@ -214,7 +214,8 @@ module hyprduel_sys #(
     ymm  = (26'(ym_xl) + 26'(ym_xr)) >>> 1;
     ymm  = (ymm * 26'sd307) >>> 8;              // x1.20
     okim = (26'(oki_snd) <<< 2);
-    okim = (okim * 26'sd146) >>> 8;             // x0.57
+    okim = (okim * 26'sd457) >>> 8;             // x1.79 (calibrated:
+    // jt6295's scale sits ~2 bits under MAME's okim6295 stream)
     mix  = ymm + okim;
     if (mix > 26'sd32767)       o_audio = 16'sd32767;
     else if (mix < -26'sd32768) o_audio = -16'sd32768;
