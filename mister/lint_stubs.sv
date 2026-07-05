@@ -20,7 +20,7 @@ endmodule
 module hps_io #(parameter CONF_STR = "", CONF_STR_BRAM = 0, PS2DIV = 0,
                 WIDE = 0, VDNUM = 1, BLKSZ = 2, PS2WE = 0, STRLEN = 0) (
     input         clk_sys,
-    inout  [48:0] HPS_BUS,
+    inout  [45:0] HPS_BUS,
     inout  [35:0] EXT_BUS,
     inout  [21:0] gamma_bus,
     output [1:0]  buttons,
@@ -32,7 +32,7 @@ module hps_io #(parameter CONF_STR = "", CONF_STR_BRAM = 0, PS2DIV = 0,
     output        ioctl_wr,
     output [26:0] ioctl_addr,
     output [7:0]  ioctl_dout,
-    output [7:0]  ioctl_index,
+    output [15:0] ioctl_index,
     output [31:0] joystick_0,
     output [31:0] joystick_1
 );

@@ -57,9 +57,16 @@ module hyprduel_sys #(
   // ------------------------------------------------------------------
   // memories
   // ------------------------------------------------------------------
+  // True dual-port shared RAMs: port A = main CPU, port B = sub CPU.
+  // Reads and writes for both ports live in ONE always block per memory
+  // (Intel single-clock TDP template) so Quartus infers M10K; writes use
+  // byte-enable part-selects, reads land in continuously-updated q regs
+  // that the bus FSMs consume one state later (addresses are stable from
+  // the strobe cycle, so the q value matches the old direct read).
   logic [15:0] shared1 [0:16383];     // 32 KB (sub vectors live here)
   logic [15:0] shared2 [0:8191];      // 16 KB
   logic [15:0] shared3 [0:57343];     // 112 KB
+
 
   // ------------------------------------------------------------------
   // CPU clock enables (two-phase)
@@ -146,7 +153,7 @@ module hyprduel_sys #(
     .i_gfx_size(i_gfx_size)
   );
 
-  // ------------------------------------------------------------------
+
   // YM2151 (jt51) at sub 0x400000-0x400003, IRQ -> sub IPL1
   // ------------------------------------------------------------------
   localparam int P_YMDIV = (P_PIXDIV * 5) / 3;   // 4 MHz from the sys clock
@@ -197,18 +204,21 @@ module hyprduel_sys #(
     .sound(oki_snd), .sample()
   );
 
-  // mono mix: (yml + ymr)/2 * 0.80 + oki * 0.57, saturated
+  // mono mix, matched to MAME's measured stream levels (2026-07-05
+  // split-capture calibration): YM x1.20, OKI x0.57 after the 14->16
+  // bit scale. 26-bit intermediates: the old 18-bit ones WRAPPED for
+  // any sample above ~640, mangling the output (docs/qa_checklist.md).
   logic signed [15:0] ym_xl, ym_xr;
   always_comb begin
-    logic signed [17:0] ymm, okim, mix;
-    ymm  = (18'(ym_xl) + 18'(ym_xr)) >>> 1;
-    ymm  = (ymm * 18'sd205) >>> 8;
-    okim = (18'(oki_snd) <<< 2);
-    okim = (okim * 18'sd146) >>> 8;
+    logic signed [25:0] ymm, okim, mix;
+    ymm  = (26'(ym_xl) + 26'(ym_xr)) >>> 1;
+    ymm  = (ymm * 26'sd307) >>> 8;              // x1.20
+    okim = (26'(oki_snd) <<< 2);
+    okim = (okim * 26'sd146) >>> 8;             // x0.57
     mix  = ymm + okim;
-    if (mix > 18'sd32767)       o_audio = 16'sd32767;
-    else if (mix < -18'sd32768) o_audio = -16'sd32768;
-    else                        o_audio = 16'(mix);
+    if (mix > 26'sd32767)       o_audio = 16'sd32767;
+    else if (mix < -26'sd32768) o_audio = -16'sd32768;
+    else                        o_audio = mix[15:0];
   end
 
   // ------------------------------------------------------------------
@@ -288,13 +298,7 @@ module hyprduel_sys #(
               end else
                 mbst <= MB_WAIT;   // registered reads settle next cycle
             end else begin
-              // writes commit here
-              if (m_sel_sr1) shared1[m_ba[14:1]]
-                <= (shared1[m_ba[14:1]] & ~m_wmask) | (m_dout & m_wmask);
-              if (m_sel_sr2) shared2[m_ba[13:1]]
-                <= (shared2[m_ba[13:1]] & ~m_wmask) | (m_dout & m_wmask);
-              if (m_sel_sr3) shared3[m_ba[17:1] - 17'h2000]
-                <= (shared3[m_ba[17:1] - 17'h2000] & ~m_wmask) | (m_dout & m_wmask);
+              // shared RAM writes commit in the TDP blocks below
               if (m_sel_ctl && !m_ldsn) begin
                 dbg_subctl <= m_dout[7:0];
                 case (m_dout[7:0])
@@ -316,9 +320,9 @@ module hyprduel_sys #(
           end
         end
         MB_WAIT: begin
-          if (m_sel_sr1) m_rdata_q <= shared1[m_ba[14:1]];
-          else if (m_sel_sr2) m_rdata_q <= shared2[m_ba[13:1]];
-          else if (m_sel_sr3) m_rdata_q <= shared3[m_ba[17:1] - 17'h2000];
+          if (m_sel_sr1) m_rdata_q <= sr1_q_a;
+          else if (m_sel_sr2) m_rdata_q <= sr2_q_a;
+          else if (m_sel_sr3) m_rdata_q <= sr3_q_a;
           else if (m_sel_io) begin
             case (m_ba[2:1])
               2'd0: m_rdata_q <= i_service;
@@ -369,26 +373,19 @@ module hyprduel_sys #(
             if (s_rw) begin
               sbst <= SB_WAIT;
             end else begin
-              if (s_sel_vec) shared1[{2'b00, s_ba[13:1]}]
-                <= (shared1[{2'b00, s_ba[13:1]}] & ~s_wmask) | (s_dout & s_wmask);
-              if (s_sel_sr1) shared1[s_ba[14:1]]
-                <= (shared1[s_ba[14:1]] & ~s_wmask) | (s_dout & s_wmask);
-              if (s_sel_sr2) shared2[s_ba[13:1]]
-                <= (shared2[s_ba[13:1]] & ~s_wmask) | (s_dout & s_wmask);
-              if (s_sel_sr3) shared3[s_ba[17:1] - 17'h2000]
-                <= (shared3[s_ba[17:1] - 17'h2000] & ~s_wmask) | (s_dout & s_wmask);
-              // s_sel_ro3 writes ignored (read-only shadow)
+              // shared RAM writes commit in the TDP blocks below
+              // (s_sel_ro3 writes ignored: read-only shadow)
               // s_sel_snd writes ignored (sound stubs)
               sbst <= SB_ACK;
             end
           end
         end
         SB_WAIT: begin
-          if (s_sel_vec)      s_rdata_q <= shared1[{2'b00, s_ba[13:1]}];
-          else if (s_sel_ro3) s_rdata_q <= shared3[{4'b0000, s_ba[13:1]}];
-          else if (s_sel_sr1) s_rdata_q <= shared1[s_ba[14:1]];
-          else if (s_sel_sr2) s_rdata_q <= shared2[s_ba[13:1]];
-          else if (s_sel_sr3) s_rdata_q <= shared3[s_ba[17:1] - 17'h2000];
+          if (s_sel_vec)      s_rdata_q <= sr1_q_b;
+          else if (s_sel_ro3) s_rdata_q <= sr3_q_b;
+          else if (s_sel_sr1) s_rdata_q <= sr1_q_b;
+          else if (s_sel_sr2) s_rdata_q <= sr2_q_b;
+          else if (s_sel_sr3) s_rdata_q <= sr3_q_b;
           else if (s_sel_ym)  s_rdata_q <= {8'h00, ym_dout};
           else if (s_sel_snd) s_rdata_q <= {8'h00, oki_dout};
           else                s_rdata_q <= 16'hFFFF;
@@ -414,5 +411,73 @@ module hyprduel_sys #(
 
   assign s_din = s_rdata_q;
   assign s_dtackn = !(sbst == SB_ACK);
+
+  // ------------------------------------------------------------------
+  // shared RAM TDP ports (port A = main, port B = sub)
+  // ------------------------------------------------------------------
+  logic [13:0] sr1_addr_a, sr1_addr_b;
+  logic [12:0] sr2_addr_a, sr2_addr_b;
+  logic [16:0] sr3_addr_a, sr3_addr_b;
+  logic        sr1_we_a, sr1_we_b, sr2_we_a, sr2_we_b, sr3_we_a, sr3_we_b;
+  logic [15:0] sr1_q_a, sr1_q_b, sr2_q_a, sr2_q_b, sr3_q_a, sr3_q_b;
+
+  wire m_wr_commit = (mbst == MB_IDLE) && m_strobe && !m_sel_vdp
+                     && !m_iack && !m_rw;
+  wire s_wr_commit = (sbst == SB_IDLE) && s_strobe && !s_iack && !s_rw;
+
+  assign sr1_addr_a = m_ba[14:1];
+  assign sr2_addr_a = m_ba[13:1];
+  assign sr3_addr_a = m_ba[17:1] - 17'h2000;
+  assign sr1_we_a = m_wr_commit && m_sel_sr1;
+  assign sr2_we_a = m_wr_commit && m_sel_sr2;
+  assign sr3_we_a = m_wr_commit && m_sel_sr3;
+
+  assign sr1_addr_b = s_sel_vec ? {2'b00, s_ba[13:1]} : s_ba[14:1];
+  assign sr2_addr_b = s_ba[13:1];
+  assign sr3_addr_b = s_sel_ro3 ? {4'b0000, s_ba[13:1]}
+                                : (s_ba[17:1] - 17'h2000);
+  assign sr1_we_b = s_wr_commit && (s_sel_vec || s_sel_sr1);
+  assign sr2_we_b = s_wr_commit && s_sel_sr2;
+  assign sr3_we_b = s_wr_commit && s_sel_sr3;
+
+
+  always_ff @(posedge clk) begin
+    if (sr1_we_a) begin
+      if (!m_udsn) shared1[sr1_addr_a][15:8] <= m_dout[15:8];
+      if (!m_ldsn) shared1[sr1_addr_a][7:0]  <= m_dout[7:0];
+    end
+    sr1_q_a <= shared1[sr1_addr_a];
+    if (sr1_we_b) begin
+      if (!s_udsn) shared1[sr1_addr_b][15:8] <= s_dout[15:8];
+      if (!s_ldsn) shared1[sr1_addr_b][7:0]  <= s_dout[7:0];
+    end
+    sr1_q_b <= shared1[sr1_addr_b];
+  end
+
+  always_ff @(posedge clk) begin
+    if (sr2_we_a) begin
+      if (!m_udsn) shared2[sr2_addr_a][15:8] <= m_dout[15:8];
+      if (!m_ldsn) shared2[sr2_addr_a][7:0]  <= m_dout[7:0];
+    end
+    sr2_q_a <= shared2[sr2_addr_a];
+    if (sr2_we_b) begin
+      if (!s_udsn) shared2[sr2_addr_b][15:8] <= s_dout[15:8];
+      if (!s_ldsn) shared2[sr2_addr_b][7:0]  <= s_dout[7:0];
+    end
+    sr2_q_b <= shared2[sr2_addr_b];
+  end
+
+  always_ff @(posedge clk) begin
+    if (sr3_we_a) begin
+      if (!m_udsn) shared3[sr3_addr_a][15:8] <= m_dout[15:8];
+      if (!m_ldsn) shared3[sr3_addr_a][7:0]  <= m_dout[7:0];
+    end
+    sr3_q_a <= shared3[sr3_addr_a];
+    if (sr3_we_b) begin
+      if (!s_udsn) shared3[sr3_addr_b][15:8] <= s_dout[15:8];
+      if (!s_ldsn) shared3[sr3_addr_b][7:0]  <= s_dout[7:0];
+    end
+    sr3_q_b <= shared3[sr3_addr_b];
+  end
 
 endmodule

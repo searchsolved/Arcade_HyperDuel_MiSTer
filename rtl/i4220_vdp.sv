@@ -480,16 +480,35 @@ module i4220_vdp #(
   wire [15:0] wmask_be = {{8{i_be[1]}}, {8{i_be[0]}}};
   always_ff @(posedge clk) begin
     if (bl_we) begin
+      // byte-enable part-selects keep this M10K-inferrable in Quartus
       unique case (bl_layer)
-        2'd0: vram0[bl_addr] <= (vram0[bl_addr] & ~bl_wmask) | (bl_wdata & bl_wmask);
-        2'd1: vram1[bl_addr] <= (vram1[bl_addr] & ~bl_wmask) | (bl_wdata & bl_wmask);
-        default: vram2[bl_addr] <= (vram2[bl_addr] & ~bl_wmask) | (bl_wdata & bl_wmask);
+        2'd0: begin
+          if (bl_wmask[15]) vram0[bl_addr][15:8] <= bl_wdata[15:8];
+          if (bl_wmask[0])  vram0[bl_addr][7:0]  <= bl_wdata[7:0];
+        end
+        2'd1: begin
+          if (bl_wmask[15]) vram1[bl_addr][15:8] <= bl_wdata[15:8];
+          if (bl_wmask[0])  vram1[bl_addr][7:0]  <= bl_wdata[7:0];
+        end
+        default: begin
+          if (bl_wmask[15]) vram2[bl_addr][15:8] <= bl_wdata[15:8];
+          if (bl_wmask[0])  vram2[bl_addr][7:0]  <= bl_wdata[7:0];
+        end
       endcase
     end else if (bst == B_IDLE && i_cs && !i_rnw && (in_vram || in_rmw) && !bl_busy) begin
       unique case (in_rmw ? rmw_lyr : vlyr)
-        2'd0: vram0[cpu_vword] <= (vram0[cpu_vword] & ~wmask_be) | (i_wdata & wmask_be);
-        2'd1: vram1[cpu_vword] <= (vram1[cpu_vword] & ~wmask_be) | (i_wdata & wmask_be);
-        default: vram2[cpu_vword] <= (vram2[cpu_vword] & ~wmask_be) | (i_wdata & wmask_be);
+        2'd0: begin
+          if (i_be[1]) vram0[cpu_vword][15:8] <= i_wdata[15:8];
+          if (i_be[0]) vram0[cpu_vword][7:0]  <= i_wdata[7:0];
+        end
+        2'd1: begin
+          if (i_be[1]) vram1[cpu_vword][15:8] <= i_wdata[15:8];
+          if (i_be[0]) vram1[cpu_vword][7:0]  <= i_wdata[7:0];
+        end
+        default: begin
+          if (i_be[1]) vram2[cpu_vword][15:8] <= i_wdata[15:8];
+          if (i_be[0]) vram2[cpu_vword][7:0]  <= i_wdata[7:0];
+        end
       endcase
     end else begin
       q_vram0 <= vram0[cpu_vword];
@@ -502,14 +521,22 @@ module i4220_vdp #(
   logic reg_w;   // pulse: commit register write this cycle
   always_ff @(posedge clk) begin
     if (bst == B_IDLE && i_cs && !i_rnw) begin
-      if (in_scratch) scratch[i_addr[12:1]]
-          <= (q_scr & ~wmask_be) | (i_wdata & wmask_be);
-      if (in_pal) palette[i_addr[12:1]]
-          <= (palette[i_addr[12:1]] & ~wmask_be) | (i_wdata & wmask_be);
-      if (in_spr) spr_live[i_addr[11:1]]
-          <= (spr_live[i_addr[11:1]] & ~wmask_be) | (i_wdata & wmask_be);
-      if (in_tt) tiletable[i_addr[10:1]]
-          <= (tiletable[i_addr[10:1]] & ~wmask_be) | (i_wdata & wmask_be);
+      if (in_scratch) begin
+        if (i_be[1]) scratch[i_addr[12:1]][15:8] <= i_wdata[15:8];
+        if (i_be[0]) scratch[i_addr[12:1]][7:0]  <= i_wdata[7:0];
+      end
+      if (in_pal) begin
+        if (i_be[1]) palette[i_addr[12:1]][15:8] <= i_wdata[15:8];
+        if (i_be[0]) palette[i_addr[12:1]][7:0]  <= i_wdata[7:0];
+      end
+      if (in_spr) begin
+        if (i_be[1]) spr_live[i_addr[11:1]][15:8] <= i_wdata[15:8];
+        if (i_be[0]) spr_live[i_addr[11:1]][7:0]  <= i_wdata[7:0];
+      end
+      if (in_tt) begin
+        if (i_be[1]) tiletable[i_addr[10:1]][15:8] <= i_wdata[15:8];
+        if (i_be[0]) tiletable[i_addr[10:1]][7:0]  <= i_wdata[7:0];
+      end
     end
   end
 

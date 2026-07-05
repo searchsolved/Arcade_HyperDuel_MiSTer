@@ -134,6 +134,7 @@ boot: $(BUILD)/obj_sys/Vtb_system $(BUILD)/mame/mainrom.hex
 		+OUTDIR=$(BUILD)/boot$(if $(SDRAM),_sdram) \
 		+FRAMES=$(or $(FRAMES),240) +DUMPEVERY=30 \
 		$(if $(AUDIODUMP),+AUDIODUMP=$(AUDIODUMP)) \
+		$(if $(AUDIOSPLIT),+AUDIOSPLIT=$(AUDIOSPLIT)) \
 		$(if $(SDRAM),+SDRAM=$(SDRAM))
 
 clean:

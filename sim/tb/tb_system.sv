@@ -237,6 +237,12 @@ module tb_system;
   logic [7:0] cur_reg;
   bit         r14_vals[256];       // distinct values ever written to reg 0x14
   int         iack1_edges, iack2_edges, irq_falls, st_reads;
+  logic [23:0] okiw_log [40];
+  logic [23:0] okir_log [20];
+  int          okiw_n, okir_n;
+  longint      oki_nz;
+  int          oki_first;
+  initial oki_first = -1;
   int         st_flagA, st_flagB, st_busy;
   logic [7:0] st_last[16];         // last 16 status values returned
   int         st_lidx;
@@ -264,6 +270,21 @@ module tb_system;
       if (dut.ym_dout[1]) st_flagB <= st_flagB + 1;
       if (dut.ym_dout[7]) st_busy  <= st_busy  + 1;
     end
+    // OKI diagnostics: command writes, status reads, output activity
+    if (!dut.oki_wrn) begin
+      if (okiw_n < 40) begin
+        okiw_log[okiw_n] <= {16'(frames_seen), dut.oki_din};
+        okiw_n <= okiw_n + 1;
+      end
+    end
+    if (dut.sbst == 1 && dut.s_sel_snd && dut.s_rw && okir_n < 20) begin
+      okir_log[okir_n] <= {16'(frames_seen), dut.oki_dout};
+      okir_n <= okir_n + 1;
+    end
+    if (dut.oki_snd != 0) begin
+      oki_nz <= oki_nz + 1;
+      if (oki_first < 0) oki_first <= frames_seen;
+    end
     s_iack_d <= dut.s_iack;
     ym_irq_d <= dut.ym_irq_n;
     if (dut.s_iack && !s_iack_d && dut.s_a[3:1] == 3'd1) iack1_edges <= iack1_edges + 1;
@@ -275,18 +296,31 @@ module tb_system;
   end
 
   // audio capture: +AUDIODUMP=<path> writes raw s16le mono at sys/2048
-  // (~52 kHz); convert with sim/mame/raw_to_wav.py
-  int fh_audio;
+  // (~52 kHz); convert with sim/mame/raw_to_wav.py.
+  // +AUDIOSPLIT=<prefix> additionally writes <prefix>_ym.raw and
+  // <prefix>_oki.raw (pre-mix component taps) for mix-balance work.
+  int fh_audio, fh_ym, fh_oki;
   logic [10:0] adiv;
   initial begin
     string apath;
-    fh_audio = 0;
+    fh_audio = 0; fh_ym = 0; fh_oki = 0;
     if ($value$plusargs("AUDIODUMP=%s", apath)) fh_audio = $fopen(apath, "wb");
+    if ($value$plusargs("AUDIOSPLIT=%s", apath)) begin
+      fh_ym  = $fopen({apath, "_ym.raw"}, "wb");
+      fh_oki = $fopen({apath, "_oki.raw"}, "wb");
+    end
   end
+  logic signed [15:0] tap_ym, tap_oki;
   always_ff @(posedge clk) begin
     adiv <= adiv + 1'b1;
+    tap_ym  <= 16'((18'(dut.ym_xl) + 18'(dut.ym_xr)) >>> 1);
+    tap_oki <= {dut.oki_snd, 2'b00};
     if (fh_audio != 0 && adiv == 0)
       $fwrite(fh_audio, "%c%c", dut.o_audio[7:0], dut.o_audio[15:8]);
+    if (fh_ym != 0 && adiv == 0)
+      $fwrite(fh_ym, "%c%c", tap_ym[7:0], tap_ym[15:8]);
+    if (fh_oki != 0 && adiv == 0)
+      $fwrite(fh_oki, "%c%c", tap_oki[7:0], tap_oki[15:8]);
   end
 
   // sub CPU activity trace + per-frame samplers
@@ -422,6 +456,12 @@ module tb_system;
     $write("reg14 distinct values:");
     for (int i = 0; i < 256; i++) if (r14_vals[i]) $write(" %02x", i);
     $write("\n");
+    $display("oki: writes=%0d status_reads=%0d nz_samples=%0d first_nz_frame=%0d",
+             okiw_n, okir_n, oki_nz, oki_first);
+    for (int i = 0; i < okiw_n; i++)
+      $display("  OKIW f=%0d val=%02x", okiw_log[i][23:8], okiw_log[i][7:0]);
+    for (int i = 0; i < okir_n; i++)
+      $display("  OKIR f=%0d val=%02x", okir_log[i][23:8], okir_log[i][7:0]);
     if (fh_audio != 0) $fclose(fh_audio);
     $finish;
   end

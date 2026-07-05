@@ -14,48 +14,18 @@
 
 module emu
 (
-    input         CLK_50M,
-    input         RESET,
-    inout  [48:0] HPS_BUS,
-    output        CLK_VIDEO,
-    output        CE_PIXEL,
-    output [12:0] VIDEO_ARX,
-    output [12:0] VIDEO_ARY,
-    output  [7:0] VGA_R,
-    output  [7:0] VGA_G,
-    output  [7:0] VGA_B,
-    output        VGA_HS,
-    output        VGA_VS,
-    output        VGA_DE,
-    output        VGA_F1,
-    output  [1:0] VGA_SL,
-    output        VGA_SCALER,
-    output        VGA_DISABLE,
-    input  [11:0] HDMI_WIDTH,
-    input  [11:0] HDMI_HEIGHT,
-    output        HDMI_FREEZE,
-    output        HDMI_BLACKOUT,
-    output        HDMI_BOB_DEINT,
-    output  [1:0] LED_POWER,
-    output  [1:0] LED_DISK,
-    output  [1:0] LED_USER,
-    output [15:0] AUDIO_L,
-    output [15:0] AUDIO_R,
-    output        AUDIO_S,
-    output  [1:0] AUDIO_MIX,
-    // SDRAM
-    output        SDRAM_CLK,
-    output        SDRAM_CKE,
-    output [12:0] SDRAM_A,
-    output  [1:0] SDRAM_BA,
-    inout  [15:0] SDRAM_DQ,
-    output        SDRAM_DQML,
-    output        SDRAM_DQMH,
-    output        SDRAM_nCS,
-    output        SDRAM_nCAS,
-    output        SDRAM_nRAS,
-    output        SDRAM_nWE
+	`include "sys/emu_ports.vh"
 );
+
+///////// defaults for ports this core does not use /////////
+
+assign ADC_BUS  = 'Z;
+assign USER_OUT = '1;
+assign {UART_RTS, UART_TXD, UART_DTR} = 0;
+assign {SD_SCK, SD_MOSI, SD_CS} = 'Z;
+assign {DDRAM_CLK, DDRAM_BURSTCNT, DDRAM_ADDR, DDRAM_DIN, DDRAM_BE, DDRAM_RD, DDRAM_WE} = '0;
+assign BUTTONS = 0;
+
 
   // ------------------------------------------------------------------
   // Clocks: 80 MHz system (P_PIXDIV=12 -> 6.667 MHz pixel, 60.01 Hz;
@@ -89,6 +59,7 @@ module emu
     "R[0],Reset;",
     "J1,Shot,Change,Bomb,Start,Coin,Service;",
     "jn,A,B,X,Start,Select,L;",
+    "v,0;",
     "V,v",`BUILD_DATE
   };
 
@@ -103,7 +74,7 @@ module emu
   wire        ioctl_wr;
   wire [26:0] ioctl_addr;
   wire  [7:0] ioctl_dout;
-  wire  [7:0] ioctl_index;
+  wire [15:0] ioctl_index;
 
   hps_io #(.CONF_STR(CONF_STR)) hps_io (
     .clk_sys(clk_sys),
@@ -131,7 +102,7 @@ module emu
   // default bf,ff = 0xFFBF = MAME defaults, demo sounds ON)
   reg [15:0] dsw = 16'hFFBF;
   always @(posedge clk_sys)
-    if (ioctl_wr && ioctl_index == 8'd254 && ioctl_addr < 27'd2) begin
+    if (ioctl_wr && ioctl_index[7:0] == 8'd254 && ioctl_addr < 27'd2) begin
       if (ioctl_addr[0]) dsw[15:8] <= ioctl_dout;
       else               dsw[7:0]  <= ioctl_dout;
     end
@@ -151,7 +122,7 @@ module emu
   wire  [6:0] gfx_len;
   wire  [7:0] gfx_data;
   wire        dl_busy;
-  wire        rom_load = ioctl_download && (ioctl_index == 8'd0);
+  wire        rom_load = ioctl_download && (ioctl_index[7:0] == 8'd0);
 
   hyprduel_sdram sdram (
     .clk(clk_sys),
@@ -237,11 +208,11 @@ module emu
   assign VIDEO_ARX = 13'd4;    // arcade 4:3 monitor
   assign VIDEO_ARY = 13'd3;
 
-  arcade_video #(.WIDTH(320), .DW(15)) arcade_video (
+  arcade_video #(.WIDTH(320), .DW(24)) arcade_video (
     .*,
     .clk_video(clk_sys),
     .ce_pix(ce_pix),
-    .RGB_in({r5, g5, b5}),
+    .RGB_in({r5, r5[4:2], g5, g5[4:2], b5, b5[4:2]}),
     .HBlank(hbl),
     .VBlank(vbl),
     .HSync(hs),

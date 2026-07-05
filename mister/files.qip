@@ -1,0 +1,39 @@
+# Hyper Duel core file list. This file is `source`d by Hyprduel.qsf, so
+# paths are plain and relative to the project directory (mister/).
+# Only real .qip files (loaded via QIP_FILE) may use $::quartus(qip_path).
+
+# core RTL
+set_global_assignment -name SYSTEMVERILOG_FILE ../rtl/i4220_render.sv
+set_global_assignment -name SYSTEMVERILOG_FILE ../rtl/i4220_blitter.sv
+set_global_assignment -name SYSTEMVERILOG_FILE ../rtl/i4220_vdp.sv
+set_global_assignment -name SYSTEMVERILOG_FILE ../rtl/hyprduel_sys.sv
+set_global_assignment -name SYSTEMVERILOG_FILE ../rtl/hyprduel_sdram.sv
+
+# fx68k (cycle-exact 68000); microrom/nanorom .mem found via SEARCH_PATH
+set_global_assignment -name SYSTEMVERILOG_FILE ../rtl/vendor/fx68k/fx68k.sv
+set_global_assignment -name SYSTEMVERILOG_FILE ../rtl/vendor/fx68k/fx68kAlu.sv
+set_global_assignment -name SYSTEMVERILOG_FILE ../rtl/vendor/fx68k/uaddrPla.sv
+set_global_assignment -name SEARCH_PATH ../rtl/vendor/fx68k
+
+# jt51 (YM2151) via its own qip (qip_path valid there)
+set_global_assignment -name QIP_FILE ../rtl/vendor/jt51/hdl/jt51.qip
+
+# jt6295 (OKI M6295), INTERPOL=0: listed explicitly because the vendor
+# qip references a jtframe file we do not carry
+set_global_assignment -name VERILOG_FILE ../rtl/vendor/jt6295/hdl/jt6295.v
+set_global_assignment -name VERILOG_FILE ../rtl/vendor/jt6295/hdl/jt6295_adpcm.v
+set_global_assignment -name VERILOG_FILE ../rtl/vendor/jt6295/hdl/jt6295_timing.v
+set_global_assignment -name VERILOG_FILE ../rtl/vendor/jt6295/hdl/jt6295_acc.v
+set_global_assignment -name VERILOG_FILE ../rtl/vendor/jt6295/hdl/jt6295_ctrl.v
+set_global_assignment -name VERILOG_FILE ../rtl/vendor/jt6295/hdl/jt6295_rom.v
+set_global_assignment -name VERILOG_FILE ../rtl/vendor/jt6295/hdl/jt6295_serial.v
+set_global_assignment -name VERILOG_FILE ../rtl/vendor/jt6295/hdl/jt6295_sh_rst.v
+set_global_assignment -name SEARCH_PATH ../rtl/vendor/jt6295/hdl
+
+# core PLL: 80 MHz system + 80 MHz -90deg for SDRAM_CLK
+set_global_assignment -name VERILOG_FILE pll.v
+set_global_assignment -name VERILOG_FILE pll/pll_0002.v
+
+# shell
+set_global_assignment -name SDC_FILE Hyprduel.sdc
+set_global_assignment -name SYSTEMVERILOG_FILE Hyprduel.sv
