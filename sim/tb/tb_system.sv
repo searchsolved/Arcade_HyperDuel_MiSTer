@@ -181,15 +181,63 @@ module tb_system;
   // sound-path probes
   longint ymwr_cnt, s_iack1_cnt, s_iack2_cnt, ymirq_seen;
   logic [7:0] last_ym_a0_0, last_ym_a0_1;
+  // extended diagnostics (docs/audio_bug_ym_irq_storm.md step 1)
+  int         ym_hist [256];       // data-write count per register
+  logic [7:0] ym_lastv[256];       // last value written per register
+  int         ym_ffirst[256];      // frame of first write per register (-1 = never)
+  logic [7:0] cur_reg;
+  bit         r14_vals[256];       // distinct values ever written to reg 0x14
+  int         iack1_edges, iack2_edges, irq_falls, st_reads;
+  int         st_flagA, st_flagB, st_busy;
+  logic [7:0] st_last[16];         // last 16 status values returned
+  int         st_lidx;
+  logic       s_iack_d, ym_irq_d;
+  initial for (int i = 0; i < 256; i++) ym_ffirst[i] = -1;
   always_ff @(posedge clk) begin
     if (!dut.ym_cs_n && !dut.ym_wr_n) begin
       ymwr_cnt <= ymwr_cnt + 1;
-      if (!dut.ym_a0) last_ym_a0_0 <= dut.ym_din;
-      else            last_ym_a0_1 <= dut.ym_din;
+      if (!dut.ym_a0) begin
+        last_ym_a0_0 <= dut.ym_din;
+        cur_reg      <= dut.ym_din;
+      end else begin
+        last_ym_a0_1 <= dut.ym_din;
+        ym_hist[cur_reg] <= ym_hist[cur_reg] + 1;
+        ym_lastv[cur_reg] <= dut.ym_din;
+        if (ym_ffirst[cur_reg] < 0) ym_ffirst[cur_reg] <= frames_seen;
+        if (cur_reg == 8'h14) r14_vals[dut.ym_din] = 1'b1;
+      end
     end
+    if (!dut.ym_cs_n && dut.ym_wr_n) begin  // status read access
+      st_reads <= st_reads + 1;
+      st_last[st_lidx & 15] <= dut.ym_dout;
+      st_lidx <= st_lidx + 1;
+      if (dut.ym_dout[0]) st_flagA <= st_flagA + 1;
+      if (dut.ym_dout[1]) st_flagB <= st_flagB + 1;
+      if (dut.ym_dout[7]) st_busy  <= st_busy  + 1;
+    end
+    s_iack_d <= dut.s_iack;
+    ym_irq_d <= dut.ym_irq_n;
+    if (dut.s_iack && !s_iack_d && dut.s_a[3:1] == 3'd1) iack1_edges <= iack1_edges + 1;
+    if (dut.s_iack && !s_iack_d && dut.s_a[3:1] == 3'd2) iack2_edges <= iack2_edges + 1;
+    if (!dut.ym_irq_n && ym_irq_d) irq_falls <= irq_falls + 1;
     if (dut.s_iack && dut.s_a[3:1] == 3'd1) s_iack1_cnt <= s_iack1_cnt + 1;
     if (dut.s_iack && dut.s_a[3:1] == 3'd2) s_iack2_cnt <= s_iack2_cnt + 1;
     if (!dut.ym_irq_n) ymirq_seen <= ymirq_seen + 1;
+  end
+
+  // audio capture: +AUDIODUMP=<path> writes raw s16le mono at sys/2048
+  // (~52 kHz); convert with sim/mame/raw_to_wav.py
+  int fh_audio;
+  logic [10:0] adiv;
+  initial begin
+    string apath;
+    fh_audio = 0;
+    if ($value$plusargs("AUDIODUMP=%s", apath)) fh_audio = $fopen(apath, "wb");
+  end
+  always_ff @(posedge clk) begin
+    adiv <= adiv + 1'b1;
+    if (fh_audio != 0 && adiv == 0)
+      $fwrite(fh_audio, "%c%c", dut.o_audio[7:0], dut.o_audio[15:8]);
   end
 
   // sub CPU activity trace + per-frame samplers
@@ -298,6 +346,20 @@ module tb_system;
              frames_seen, audio_activity);
     $display("probes: ym_writes=%0d (last reg=%02x val=%02x) sub_iack1=%0d sub_iack2=%0d ym_irq_cycles=%0d",
              ymwr_cnt, last_ym_a0_0, last_ym_a0_1, s_iack1_cnt, s_iack2_cnt, ymirq_seen);
+    $display("edges: iack1=%0d iack2=%0d irq_falls=%0d", iack1_edges, iack2_edges, irq_falls);
+    $display("status reads=%0d flagA_set=%0d flagB_set=%0d busy_set=%0d",
+             st_reads, st_flagA, st_flagB, st_busy);
+    $write("status last16:");
+    for (int i = 0; i < 16; i++) $write(" %02x", st_last[(st_lidx + i) & 15]);
+    $write("\n");
+    $display("ym reg histogram (reg count lastval firstframe):");
+    for (int i = 0; i < 256; i++)
+      if (ym_hist[i] != 0)
+        $display("  HIST %02x %0d %02x %0d", i, ym_hist[i], ym_lastv[i], ym_ffirst[i]);
+    $write("reg14 distinct values:");
+    for (int i = 0; i < 256; i++) if (r14_vals[i]) $write(" %02x", i);
+    $write("\n");
+    if (fh_audio != 0) $fclose(fh_audio);
     $finish;
   end
 

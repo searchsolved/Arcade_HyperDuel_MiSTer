@@ -130,7 +130,8 @@ boot: $(BUILD)/obj_sys/Vtb_system $(BUILD)/mame/mainrom.hex
 	$(BUILD)/obj_sys/Vtb_system +MAINROM=$(BUILD)/mame/mainrom.hex \
 		+GFXROM=$(BUILD)/mame/gfxrom.hex +GFXSIZE=4194304 \
 		+OKIROM=$(BUILD)/mame/okirom.hex \
-		+OUTDIR=$(BUILD)/boot +FRAMES=$(or $(FRAMES),240) +DUMPEVERY=30
+		+OUTDIR=$(BUILD)/boot +FRAMES=$(or $(FRAMES),240) +DUMPEVERY=30 \
+		$(if $(AUDIODUMP),+AUDIODUMP=$(AUDIODUMP))
 
 clean:
 	rm -rf $(BUILD)
