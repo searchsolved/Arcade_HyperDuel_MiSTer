@@ -477,6 +477,12 @@ module i4220_render #(
               sxv >= WIDTH || sxv + int'(owv) <= 0) begin
             scur <= scur + 10'd1;
             st <= ST_S_RD0;
+          end else if (szoom == 20'h10000) begin
+            // 1:1 zoom (the common case): out = dim, step = 1.0 exactly;
+            // skip the ~50-cycle serial divider entirely
+            dy_q <= 24'h010000;
+            dx_q <= 24'h010000;
+            st <= ST_S_GREQ;
           end else begin
             div_num  <= {1'd0, sh_pix, 16'd0};
             div_den  <= ohv;

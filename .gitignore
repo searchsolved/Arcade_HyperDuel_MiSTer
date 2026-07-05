@@ -32,3 +32,7 @@ snap/
 sta/
 inp/
 diff/
+
+# fx68k microcode copies (Makefile copies them next to the sim binaries)
+sim/*.mem
+__pycache__/

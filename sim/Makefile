@@ -109,5 +109,28 @@ vdp-verify: $(BUILD)/obj_vdp/Vtb_vdp
 	      $(BUILD)/mame/frame_$$f/vdp.ppm || fail=1; \
 	done; exit $$fail
 
+FX68K := ../rtl/vendor/fx68k
+
+$(BUILD)/obj_sys/Vtb_system: tb/tb_system.sv ../rtl/hyprduel_sys.sv ../rtl/i4220_vdp.sv ../rtl/i4220_render.sv ../rtl/i4220_blitter.sv $(FX68K)/fx68k.sv $(FX68K)/fx68kAlu.sv
+	cp -f $(FX68K)/microrom.mem $(FX68K)/nanorom.mem .
+	$(VERILATOR) --binary --timing -Wno-fatal --timescale 1ns/1ps \
+		--Mdir $(BUILD)/obj_sys -I../rtl/vendor/jt51/hdl \
+		$(FX68K)/fx68k.sv $(FX68K)/fx68kAlu.sv $(FX68K)/uaddrPla.sv \
+		$(wildcard ../rtl/vendor/jt51/hdl/jt51*.v) \
+		$(wildcard ../rtl/vendor/jt6295/hdl/*.v) \
+		../rtl/i4220_render.sv ../rtl/i4220_blitter.sv ../rtl/i4220_vdp.sv \
+		../rtl/hyprduel_sys.sv tb/tb_system.sv --top-module tb_system
+
+$(BUILD)/mame/mainrom.hex: ../tools/build_mainrom.py
+	python3 ../tools/build_mainrom.py ../roms/hyprduel.zip $@
+
+# full-system boot run (background-friendly): dumps PPMs into build/boot
+boot: $(BUILD)/obj_sys/Vtb_system $(BUILD)/mame/mainrom.hex
+	mkdir -p $(BUILD)/boot
+	$(BUILD)/obj_sys/Vtb_system +MAINROM=$(BUILD)/mame/mainrom.hex \
+		+GFXROM=$(BUILD)/mame/gfxrom.hex +GFXSIZE=4194304 \
+		+OKIROM=$(BUILD)/mame/okirom.hex \
+		+OUTDIR=$(BUILD)/boot +FRAMES=$(or $(FRAMES),240) +DUMPEVERY=30
+
 clean:
 	rm -rf $(BUILD)

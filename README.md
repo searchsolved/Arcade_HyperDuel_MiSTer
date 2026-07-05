@@ -60,10 +60,27 @@ mra/       MRA + ROM layout         - not started
       cycles vs ~5,088 real-time budget: M4 closure is modest optimization.
       fx68k vendored + compiles under Verilator (one packed-struct patch,
       rtl/vendor/PATCHES.md).
-      REMAINING: system top (2x fx68k + shared RAM + control latch + sound
-      stubs), full-system Verilator boot to title screen
-- M4: sound, Quartus/MiSTer framework integration, SDRAM arbiter, timing
-- M5: hardware bring-up on MiSTer, MRA, real-ROM testing
+- M3 COMPLETE (2026-07-05): FULL-SYSTEM BOOT TO TITLE SCREEN in Verilator.
+      rtl/hyprduel_sys.sv: 2x fx68k (sub boots the MUSE sound driver the
+      main extracts from GFX ROM bank 0x3E via the banked window), 3 true
+      dual-port shared RAMs, real jt51 YM2151 (IRQ on sub IPL1; the MUSE
+      init requires it), control latch, autovectored IRQs. Key facts
+      discovered: only the hblank cause drives the VDP IRQ line
+      (P_IRQ_LINE_MASK, = MAME's forced OR-0xFD enable); MAME's CRTC
+      many-writes TODO is a 65,536-iteration boot delay loop. The game
+      passes its full MEMORY CHECK (our VDP state diffs EXACT vs MAME) and
+      renders POST + Technosoft title pixel-clean on the live scan-out
+      (sim/build/boot/*.png). `make boot` runs it; renderer needs
+      P_PIXDIV >= 16 in sim until M4 closes real-time (~12-14)
+- M4 (in progress, 2026-07-05): renderer REAL-TIME CLOSED (1:1-zoom
+      divider bypass; worst line 4,783 vs 5,088 budget at P_PIXDIV=12);
+      CPU ROM-window prefetch (halves boot copies); jt6295 OKI vendored +
+      wired (sub 0x400004, INTERPOL=0 until jtframe lands) + 16-bit mono
+      audio mix output (MAME weights); mra/Hyper Duel.mra written (ROM
+      interleaves + dips); mister/README.md holds the framework/SDRAM
+      plan. REMAINING: hyprduel_sys external ROM ports, SDRAM glue,
+      emu.sv shell, Quartus timing closure (needs the build machine)
+- M5: hardware bring-up on MiSTer, real-ROM testing
 
 ## Toolchain
 

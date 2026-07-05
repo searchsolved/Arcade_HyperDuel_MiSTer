@@ -1,0 +1,64 @@
+<!--
+  Hyper Duel (Japan set 1) for the hyprduel MiSTer core.
+
+  ROM layout delivered to the core (byte offsets in the download stream):
+    0x000000 - 0x07FFFF  main 68000 program (2x 256KB byte-interleaved,
+                         even byte = 24.u24, odd byte = 23.u23; the core
+                         reads 16-bit big-endian words)
+    0x080000 - 0x47FFFF  GFX ROM (4x 1MB, 64-bit word interleave per
+                         ROM_LOAD64_WORD: each ROM supplies bytes 2k..2k+1
+                         of every 8-byte group)
+    0x480000 - 0x4BFFFF  OKI M6295 samples (97.u97)
+
+  Byte-lane order within words is verified at hardware bring-up (M5);
+  see tools/build_gfxrom.py and tools/build_mainrom.py for the reference
+  layout the simulation uses.
+-->
+<misterromdescription>
+    <name>Hyper Duel</name>
+    <setname>hyprduel</setname>
+    <rbf>hyprduel</rbf>
+    <mameversion>0288</mameversion>
+    <year>1993</year>
+    <manufacturer>Technosoft</manufacturer>
+    <players>2</players>
+    <joystick>8-way</joystick>
+    <rotation>horizontal</rotation>
+    <region>Japan</region>
+
+    <switches default="ff,ff">
+        <!-- DSW port, spec: docs/hyprduel_system_spec.md sec 6 -->
+        <dip name="Coin A" bits="0,2"
+             ids="4C/1C,3C/1C,2C/1C,1C/1C,1C/2C,1C/3C,1C/4C,Free Play"
+             values="1,2,3,7,6,5,4,0"/>
+        <dip name="Coin B" bits="3,5"
+             ids="4C/1C,3C/1C,2C/1C,1C/1C,1C/2C,1C/3C,1C/4C,Free Play"
+             values="1,2,3,7,6,5,4,0"/>
+        <dip name="Demo Sounds" bits="6" ids="On,Off"/>
+        <dip name="Start Up Mode" bits="7" ids="On,Off"/>
+        <dip name="Flip Screen" bits="8" ids="On,Off"/>
+        <dip name="Difficulty" bits="10,11"
+             ids="Very Hard,Hard,Easy,Normal" values="0,1,2,3"/>
+        <dip name="Lives" bits="12,13" ids="5,4,2,3" values="0,1,2,3"/>
+    </switches>
+
+    <buttons names="Shot,Change,Bomb,Start,Coin,Service"
+             default="A,B,X,Start,Select,L"/>
+
+    <rom index="0" zip="hyprduel.zip" type="merged">
+        <!-- main 68000 program: byte interleave -->
+        <interleave output="16">
+            <part name="24.u24" crc="c7402722" map="01"/>
+            <part name="23.u23" crc="d8297c2b" map="10"/>
+        </interleave>
+        <!-- GFX region: 64-bit groups, one 16-bit word per ROM -->
+        <interleave output="64">
+            <part name="ts_hyper-1.u74" crc="4b3b2d3c" map="00000021"/>
+            <part name="ts_hyper-2.u75" crc="dc230116" map="00002100"/>
+            <part name="ts_hyper-3.u76" crc="2d770dd0" map="00210000"/>
+            <part name="ts_hyper-4.u77" crc="f88c6d33" map="21000000"/>
+        </interleave>
+        <!-- OKI samples -->
+        <part name="97.u97" crc="bf3f8574"/>
+    </rom>
+</misterromdescription>

@@ -23,7 +23,11 @@ module i4220_vdp #(
     parameter int GFX_AW = 22,
     parameter int P_PIXDIV = 12,          // sys clocks per pixel
     parameter int P_BIT5_CYCLES = 200000, // ~2.5 ms at 80 MHz
-    parameter bit P_SPR_BUFFERED = 1'b1
+    parameter bit P_SPR_BUFFERED = 1'b1,
+    // Which cause bits can drive the IRQ output line. Hyper Duel's board
+    // only responds to hblank (bit 1) on IPL3; everything else is polled.
+    // (MAME encodes the same fact by forcing the enable register OR 0xFD.)
+    parameter logic [7:0] P_IRQ_LINE_MASK = 8'hFF
 ) (
     input  logic clk,
     input  logic rst_n,
@@ -91,7 +95,7 @@ module i4220_vdp #(
   logic [15:0] r_crtc_h, r_crtc_v;
   logic [15:0] blit_regs [7];
 
-  assign o_irq = |(r_irq_cause & ~r_irq_enable);
+  assign o_irq = |(r_irq_cause & ~r_irq_enable & P_IRQ_LINE_MASK);
 
   // renderer register views
   logic [15:0] rs_scroll_x [3];
@@ -351,7 +355,11 @@ module i4220_vdp #(
   logic [GFX_AW-1:0] cpu_gfx_addr;
   logic [15:0] cpu_gfx_data;
   logic        cpu_gfx_done;
-  logic        cpu_gfx_first;
+  logic [1:0]  cpu_gfx_cnt;
+  // sequential-read prefetch: the word after the requested one
+  logic [15:0] cpu_pf_data;
+  logic [GFX_AW-1:0] cpu_pf_tag;
+  logic        cpu_pf_valid;
 
   assign rnd_rom_valid = i_rom_valid && (gr == GR_RND);
   assign bl_rom_valid  = i_rom_valid && (gr == GR_BLT);
@@ -365,6 +373,7 @@ module i4220_vdp #(
       bl_rd_d <= 1'b0;
       o_rom_req <= 1'b0;
       cpu_gfx_done <= 1'b0;
+      cpu_pf_valid <= 1'b0;
     end else begin
       o_rom_req <= 1'b0;
       cpu_gfx_done <= 1'b0;
@@ -378,7 +387,7 @@ module i4220_vdp #(
       if (cpu_gfx_req) begin
         cp_pend <= 1'b1;
         cpw_addr <= cpu_gfx_addr;
-        cpu_gfx_first <= 1'b1;
+        cpu_gfx_cnt <= 2'd0;
       end
       if (bl_rom_rd && !bl_rd_d) begin
         bp_pend <= 1'b1;
@@ -397,10 +406,11 @@ module i4220_vdp #(
           gr <= GR_CPU;
           o_rom_req  <= 1'b1;
           o_rom_addr <= cpu_gfx_req ? cpu_gfx_addr : cpw_addr;
-          o_rom_len  <= 7'd2;
-          gr_left    <= 7'd2;
+          if (cpu_gfx_req) cpw_addr <= cpu_gfx_addr;
+          o_rom_len  <= 7'd4;        // word + prefetch of the next word
+          gr_left    <= 7'd4;
           cp_pend <= 1'b0;
-          cpu_gfx_first <= 1'b1;
+          cpu_gfx_cnt <= 2'd0;
         end else if (bp_pend || (bl_rom_rd && !bl_rd_d)) begin
           gr <= GR_BLT;
           o_rom_req  <= 1'b1;
@@ -411,13 +421,20 @@ module i4220_vdp #(
         end
       end else if (i_rom_valid) begin
         if (gr == GR_CPU) begin
-          if (cpu_gfx_first) begin
-            cpu_gfx_data[15:8] <= i_rom_data;
-            cpu_gfx_first <= 1'b0;
-          end else begin
-            cpu_gfx_data[7:0] <= i_rom_data;
-            cpu_gfx_done <= 1'b1;
-          end
+          unique case (cpu_gfx_cnt)
+            2'd0: cpu_gfx_data[15:8] <= i_rom_data;
+            2'd1: begin
+              cpu_gfx_data[7:0] <= i_rom_data;
+              cpu_gfx_done <= 1'b1;
+            end
+            2'd2: cpu_pf_data[15:8] <= i_rom_data;
+            default: begin
+              cpu_pf_data[7:0] <= i_rom_data;
+              cpu_pf_tag   <= GFX_AW'(32'(cpw_addr) + 2);
+              cpu_pf_valid <= 1'b1;
+            end
+          endcase
+          cpu_gfx_cnt <= cpu_gfx_cnt + 2'd1;
         end
         if (gr_left == 7'd1) gr <= GR_NONE;
         else gr_left <= gr_left - 7'd1;
@@ -588,6 +605,10 @@ module i4220_vdp #(
   end
 
   // bus FSM
+  wire [GFX_AW-1:0] gfx_addr_c = GFX_AW'((32'(r_rombank) << 16)
+                                         + 32'(i_addr[15:1]) * 2);
+  wire cpu_pf_valid_bus = cpu_pf_valid;
+
   always_ff @(posedge clk) begin
     if (!rst_n) begin
       bst <= B_IDLE;
@@ -610,10 +631,16 @@ module i4220_vdp #(
               // stall until blitter releases VRAM
             end else if (i_rnw) begin
               if (in_gfxwin) begin
-                cpu_gfx_req <= 1'b1;
-                cpu_gfx_addr <= GFX_AW'((32'(r_rombank) << 16)
-                                        + 32'(i_addr[15:1]) * 2);
-                bst <= B_GFX;
+                if (cpu_pf_valid_bus &&
+                    gfx_addr_c == cpu_pf_tag) begin
+                  o_rdata <= (32'(gfx_addr_c) < 32'(i_gfx_size))
+                             ? cpu_pf_data : 16'hFFFF;
+                  bst <= B_ACK;
+                end else begin
+                  cpu_gfx_req <= 1'b1;
+                  cpu_gfx_addr <= gfx_addr_c;
+                  bst <= B_GFX;
+                end
               end else begin
                 bst <= B_RD1;   // registered RAM/regs read path
               end

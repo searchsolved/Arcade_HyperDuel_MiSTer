@@ -310,7 +310,7 @@ module fx68kAlu ( input clk, pwrUp, enT1, enT3, enT4,
 		ccrTemp[ ZF] = isByte ? ~(| result[7:0]) : ~(| result);
 		ccrTemp[ NF] = isByte ? result[7] : result[15];
 
-		unique case( oper)
+		case( oper)
 		
 		OP_EXT:
 			// Division overflow.
@@ -529,28 +529,28 @@ module aluGetOp( input [15:0] row, input [2:0] col, input isCorf,
 	
 	always_comb begin
 		aluOp = 'X;
-		unique case( col)  
+		case( col)  
 		1:   aluOp = OP_AND;
 		5:   aluOp = OP_EXT;
 
 		default:
-			unique case( 1'b1)
+			case( 1'b1)
 				row[1]:
-					unique case( col)
+					case( col)
 					2: aluOp = OP_SUB;
 					3: aluOp = OP_SUBC;
 					4,6: aluOp = OP_SLAA;
 					endcase
 				
 				row[2]:
-					unique case( col)
+					case( col)
 					2: aluOp = OP_ADD;
 					3: aluOp = OP_ADDC;
 					4: aluOp = OP_ASR;
 					endcase
 
 				row[3]:
-					unique case( col)
+					case( col)
 					2: aluOp = OP_ADDX;
 					3: aluOp = isCorf ? OP_ABCD : OP_ADD;
 					4: aluOp = OP_ASL;
@@ -561,14 +561,14 @@ module aluGetOp( input [15:0] row, input [2:0] col, input isCorf,
 				
 				row[5],
 				row[6]:
-					unique case( col)
+					case( col)
 					2: aluOp = OP_SUB;
 					3: aluOp = OP_SUBC;
 					4: aluOp = OP_LSR;
 					endcase
 				
 				row[7]:					// MUL
-					unique case( col)
+					case( col)
 					2: aluOp = OP_SUB;
 					3: aluOp = OP_ADD;
 					4: aluOp = OP_ROXR;
@@ -577,28 +577,28 @@ module aluGetOp( input [15:0] row, input [2:0] col, input isCorf,
 				row[8]:
 					// OP_AND For EXT.L
 					// But would be more efficient to change ucode and use column 1 instead of col3 at ublock extr1!				
-					unique case( col)
+					case( col)
 					2: aluOp = OP_EXT;
 					3: aluOp = OP_AND;
 					4: aluOp = OP_ROXR;
 					endcase
                
 				row[9]:
-					unique case( col)
+					case( col)
 					2: aluOp = OP_SUBX;
 					3: aluOp = OP_SBCD;
 					4: aluOp = OP_ROL;
 					endcase
 
 				row[10]:
-					unique case( col)
+					case( col)
 					2: aluOp = OP_SUBX;
 					3: aluOp = OP_SUBC;
 					4: aluOp = OP_ROR;
 					endcase
                 
 				row[11]:
-					unique case( col)
+					case( col)
 					2: aluOp = OP_SUB0;
 					3: aluOp = OP_SUB0;
 					4: aluOp = OP_ROXL;
@@ -643,7 +643,7 @@ module rowDecoder( input [15:0] ird,
 	end
 
 	always_comb begin
-		unique case( ird[15:12])
+		case( ird[15:12])
 
 		'h4:  begin
 				if( ird[8])
@@ -778,11 +778,11 @@ module ccrTable(
 	logic [MASK_NBITS-1:0] ccrMask1;
 
 	always_comb begin
-		unique case( col)
+		case( col)
 		1:			ccrMask = ccrMask1;
 		
 		2,3:
-			unique case( 1'b1)
+			case( 1'b1)
 			row[1]:		ccrMask = KNZ0C;		// DIV, used as 3n in col3
 			
 			row[3],								// ABCD
@@ -806,7 +806,7 @@ module ccrTable(
 			endcase			
 			
 		4:
-			unique case( row)
+			case( row)
 			// 1: DIV, only n (4n & 6n)
 			// 14: BCLR 4n
 			// 6,12,13,15	// not used
