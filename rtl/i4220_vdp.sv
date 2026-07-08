@@ -166,43 +166,16 @@ module i4220_vdp #(
     .addr_b(rnd_spr_addr), .q_b(spr_buf_q)
   );
 
-  // linebuf: port A = renderer write (or vblank clear), port B = scan-out
-  // Vblank clear fills all 4 banks with the background colour so that if
-  // display scans out a line before the renderer finishes it, the result
-  // is the background instead of stale pixels from the previous frame.
+  // linebuf: port A = renderer write, port B = scan-out read
+  // padded to 16 bits wide so hd_dpram byte-enable logic covers all bits
   logic [15:0] lb_rq_wide;
   wire  [11:0] lb_rq = lb_rq_wide[11:0];
-
-  logic [10:0] lbc_addr;   // vblank clear counter (4 banks x 320 = 1280)
-  logic        lbc_run;
-  wire         lbc_we = lbc_run;
-  wire  [10:0] lb_a_addr = lbc_run ? lbc_addr : {lb_bank, lb_x};
-  wire  [15:0] lb_a_data = lbc_run ? {4'd0, r_bg} : {4'd0, lb_pen};
-  wire         lb_a_we   = lbc_run || lb_we;
-
   hd_dpram #(.AW(11), .DW(16), .NUMWORDS(2048)) u_linebuf (
     .clk(clk),
-    .addr_a(lb_a_addr), .d_a(lb_a_data), .we_a(lb_a_we),
+    .addr_a({lb_bank, lb_x}), .d_a({4'd0, lb_pen}), .we_a(lb_we),
     .be_a(2'b11), .q_a(),
     .addr_b({vcnt[1:0], hcnt[8:0]}), .q_b(lb_rq_wide)
   );
-
-  // vblank linebuffer clear: runs at the start of vblank, fills all 4
-  // banks x 320 pixels with the background colour in 1280 clocks
-  always_ff @(posedge clk) begin
-    if (!rst_n) begin
-      lbc_run  <= 1'b0;
-      lbc_addr <= '0;
-    end else begin
-      if (line_start && next_v == 9'(V_VIS)) begin
-        lbc_run  <= 1'b1;
-        lbc_addr <= '0;
-      end else if (lbc_run) begin
-        if (lbc_addr == 11'd1279) lbc_run <= 1'b0;
-        lbc_addr <= lbc_addr + 11'd1;
-      end
-    end
-  end
 
   // ------------------------------------------------------------------
   // registers
@@ -375,7 +348,7 @@ module i4220_vdp #(
       // render lead (banks are 2 bits, display is never within 1 of render)
       if (ce_pix && hcnt == 9'd0 && 32'(next_v) < V_VIS) begin
         if (kf_cnt == 3'd4) begin
-          rnd_overrun <= 1'b1;
+          rnd_overrun <= 1'b1;                     // hopelessly behind
           o_dbg_ovr <= o_dbg_ovr + 16'd1;
         end else begin
           kick_fifo[kf_wr] <= next_v;

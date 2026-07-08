@@ -66,7 +66,7 @@ module tb_vdp;
     .i_gfx_size(24'(gfx_size)),
     /* verilator lint_off PINCONNECTEMPTY */
     .o_dbg_vdp_write(), .o_dbg_line_start(),
-    .o_dbg_rnd_done(), .o_dbg_lb_nonzero(), .o_dbg_palw(), .o_dbg_ovr()
+    .o_dbg_rnd_done(), .o_dbg_lb_nonzero(), .o_dbg_palw()
     /* verilator lint_on PINCONNECTEMPTY */
   );
 
