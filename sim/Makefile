@@ -115,6 +115,7 @@ FX68K := ../rtl/vendor/fx68k
 $(BUILD)/obj_sys/Vtb_system: tb/tb_system.sv tb/sdram_model.sv ../rtl/hyprduel_sys.sv ../rtl/hyprduel_sdram.sv ../rtl/i4220_vdp.sv ../rtl/i4220_render.sv ../rtl/i4220_blitter.sv ../rtl/hd_dpram.sv ../rtl/hd_tdpram.sv $(FX68K)/fx68k.sv $(FX68K)/fx68kAlu.sv
 	cp -f $(FX68K)/microrom.mem $(FX68K)/nanorom.mem .
 	$(VERILATOR) --binary --timing -Wno-fatal --timescale 1ns/1ps \
+		$(if $(PIXDIV12),+define+PIXDIV12) \
 		--Mdir $(BUILD)/obj_sys -I../rtl/vendor/jt51/hdl \
 		$(FX68K)/fx68k.sv $(FX68K)/fx68kAlu.sv $(FX68K)/uaddrPla.sv \
 		$(wildcard ../rtl/vendor/jt51/hdl/jt51*.v) \

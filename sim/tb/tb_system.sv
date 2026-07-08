@@ -10,6 +10,11 @@
 module tb_system;
 
   localparam int GFX_AW = 22;
+`ifdef PIXDIV12
+  localparam int PIXDIV = 12;   // hardware value
+`else
+  localparam int PIXDIV = 16;   // sim-default (legacy parity baselines)
+`endif
   localparam int WIDTH = 320, HEIGHT = 224;
 
   logic clk;
@@ -84,7 +89,7 @@ module tb_system;
   wire [15:0] sr3_rdata_mx = (use_sdram != 0) ? ctl_sr3_rdata : sr3_rdata_ideal;
   wire        sr3_ack_mx   = (use_sdram != 0) ? ctl_sr3_ack   : sr3_ack_ideal;
 
-  hyprduel_sys #(.GFX_AW(GFX_AW), .P_PIXDIV(16)) dut (
+  hyprduel_sys #(.GFX_AW(GFX_AW), .P_PIXDIV(PIXDIV)) dut (
     .clk(clk), .rst_n(rst_n_sys),
     .o_hs(hs), .o_vs(vs), .o_de(de), .o_ce_pix(ce_pix),
     .o_hblank(), .o_vblank(),
@@ -521,6 +526,14 @@ module tb_system;
     $display("probes: ym_writes=%0d (last reg=%02x val=%02x) sub_iack1=%0d sub_iack2=%0d ym_irq_cycles=%0d",
              ymwr_cnt, last_ym_a0_0, last_ym_a0_1, s_iack1_cnt, s_iack2_cnt, ymirq_seen);
     $display("edges: iack1=%0d iack2=%0d irq_falls=%0d", iack1_edges, iack2_edges, irq_falls);
+    $display("hwprobes: sack=%04x palw=%04x hshk=%04x subctl=%02x iack1=%02x",
+             dut.dbg_sack_cnt, dut.dbg_palw, dut.dbg_hshk, dut.dbg_subctl, dut.dbg_iack1);
+    $display("hwprobes2: wadr=%04x wcnt=%04x srrc=%04x",
+             dut.dbg_wadr, dut.dbg_wcnt, dut.dbg_srrc);
+    $display("hwprobes3: wda0=%04x wda1=%04x wda2=%04x wda3=%04x",
+             dut.dbg_wda[0], dut.dbg_wda[1], dut.dbg_wda[2], dut.dbg_wda[3]);
+    $display("hwprobes4: b3e_w0=%04x b3e_w1=%04x bank=%04x",
+             dut.dbg_b3e_w0, dut.dbg_b3e_w1, dut.dbg_bank);
     $display("status reads=%0d flagA_set=%0d flagB_set=%0d busy_set=%0d",
              st_reads, st_flagA, st_flagB, st_busy);
     $write("status last16:");

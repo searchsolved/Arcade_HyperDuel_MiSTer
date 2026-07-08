@@ -116,3 +116,13 @@ at ~frame 300 (memory check), title ~500.
   Hyper Duel Core.md) pending at session end; memory topic file
   hyperduel_mister_core.md updated through the DQM discovery but not
   the GFXP=3422 / all-green result.
+
+## Latent bug found 2026-07-08 (not the current divergence, backlog)
+
+MAME sub map: 0x004000-0x01FFFF readonly = ALL of sharedram3, aliased to
+main 0xFE4000+. Our s_sel_ro3 only covers 0x4000-0x7FFF AND maps to sr3
+words 0x0000-0x1FFF while the 0xFE4000 window maps the same bytes to
+words 0x10000+ (m_ba[17:1]-0x2000). Shadow reads therefore hit different
+SDRAM than window writes. Boot never exercises the shadow (sim boots),
+but fix range + aliasing for accuracy: shadow word addr should be
+0x10000 + ((s_ba - 0x4000) >> 1), range extended to 0x020000.

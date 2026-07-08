@@ -66,7 +66,8 @@ module i4220_vdp #(
     output logic o_dbg_vdp_write,    // CPU ever wrote to VDP
     output logic o_dbg_line_start,   // line_start ever fired
     output logic o_dbg_rnd_done,     // renderer ever completed a line
-    output logic o_dbg_lb_nonzero    // linebuf ever had a nonzero pixel
+    output logic o_dbg_lb_nonzero,   // linebuf ever had a nonzero pixel
+    output logic [15:0] o_dbg_palw   // count of nonzero palette writes
 );
 
   localparam int H_VIS = 320, H_TOTAL = 424;
@@ -832,6 +833,11 @@ module i4220_vdp #(
       if (lb_we && lb_pen != 12'd0)
                           o_dbg_lb_nonzero <= 1'b1;
     end
+  end
+
+  always_ff @(posedge clk) begin
+    if (!rst_n) o_dbg_palw <= '0;
+    else if (pal_we && i_wdata != 16'd0) o_dbg_palw <= o_dbg_palw + 16'd1;
   end
 
 endmodule

@@ -130,7 +130,11 @@ assign BUTTONS = 0;
   wire [15:0] sr3_wdata, sr3_rdata;
   wire  [1:0] sr3_be;
 
-  hyprduel_sdram #(.P_RET(4)) sdram (
+  // P_RET must match the value the sim suite validates (3, = CL2 + capture
+  // reg). The old 4 was a blind bring-up guess: single reads still worked
+  // (bus hold), but burst data came back shifted one word, so the MUSE
+  // signature scan never matched and boot never released the sub CPU.
+  hyprduel_sdram #(.P_RET(3)) sdram (
     .clk(clk_sys),
     .rst_n(pll_locked),
     .o_ready(),
@@ -214,18 +218,28 @@ assign BUTTONS = 0;
     .o_rom_req(gfx_req), .o_rom_addr(gfx_addr), .o_rom_len(gfx_len),
     .i_rom_data(gfx_data), .i_rom_valid(gfx_valid),
     .i_gfx_size(24'h400000),
-    .dbg_subctl(), .dbg_sub_in_reset(dbg_sub_in_reset),
+    .dbg_subctl(dbg_subctl), .dbg_sub_in_reset(dbg_sub_in_reset),
     .dbg_vdp_write(dbg_vdp_write), .dbg_line_start(dbg_line_start),
     .dbg_rnd_done(dbg_rnd_done), .dbg_lb_nonzero(dbg_lb_nonzero),
     .dbg_cpu_past_vectors(dbg_cpu_past_vectors),
     .dbg_vdp_cs_seen(dbg_vdp_cs_seen),
     .dbg_mrom_word0(dbg_mrom_word0), .dbg_mrom_word1(dbg_mrom_word1),
-    .dbg_mrom_word2(dbg_mrom_word2), .dbg_mrom_word3(dbg_mrom_word3)
+    .dbg_mrom_word2(dbg_mrom_word2), .dbg_mrom_word3(dbg_mrom_word3),
+    .dbg_sack_cnt(dbg_sack_cnt), .dbg_palw(dbg_palw),
+    .dbg_hshk(dbg_hshk), .dbg_iack1(dbg_iack1),
+    .dbg_wadr(dbg_wadr), .dbg_wcnt(dbg_wcnt), .dbg_srrc(dbg_srrc),
+    .dbg_wda(dbg_wda),
+    .dbg_b3e_w0(dbg_b3e_w0), .dbg_b3e_w1(dbg_b3e_w1), .dbg_bank(dbg_bank)
   );
   wire dbg_sub_in_reset, dbg_vdp_write, dbg_line_start;
   wire dbg_rnd_done, dbg_lb_nonzero;
   wire dbg_cpu_past_vectors, dbg_vdp_cs_seen;
   wire [15:0] dbg_mrom_word0, dbg_mrom_word1, dbg_mrom_word2, dbg_mrom_word3;
+  wire [7:0]  dbg_subctl, dbg_iack1;
+  wire [15:0] dbg_sack_cnt, dbg_palw, dbg_hshk;
+  wire [15:0] dbg_wadr, dbg_wcnt, dbg_srrc;
+  wire [15:0] dbg_wda [0:3];
+  wire [15:0] dbg_b3e_w0, dbg_b3e_w1, dbg_bank;
 
   // ------------------------------------------------------------------
   // video: 320x224, RGB555 expanded to 8:8:8 through arcade_video
@@ -280,6 +294,11 @@ assign BUTTONS = 0;
   reg [7:0]  s_dl_byte0, s_dl_byte1;
   reg [23:0] s_dl_count, s_dl_written;
   reg [15:0] s_dl_dropped, s_fsm_info;
+  reg [15:0] s_sack_cnt, s_palw, s_hshk;
+  reg [7:0]  s_subctl, s_iack1;
+  reg [15:0] s_wadr, s_wcnt, s_srrc;
+  reg [15:0] s_wda0, s_wda1, s_wda2, s_wda3;
+  reg [15:0] s_b3e_w0, s_b3e_w1, s_bank;
   reg [7:0]  s_reset_count;
   reg [7:0]  s_flags;
   always @(posedge clk_sys)
@@ -295,6 +314,21 @@ assign BUTTONS = 0;
       s_dl_dropped  <= dbg_dl_dropped;
       s_fsm_info    <= dbg_fsm_info;
       s_reset_count <= dbg_reset_count;
+      s_sack_cnt    <= dbg_sack_cnt;
+      s_palw        <= dbg_palw;
+      s_hshk        <= dbg_hshk;
+      s_subctl      <= dbg_subctl;
+      s_iack1       <= dbg_iack1;
+      s_wadr        <= dbg_wadr;
+      s_wcnt        <= dbg_wcnt;
+      s_srrc        <= dbg_srrc;
+      s_wda0        <= dbg_wda[0];
+      s_wda1        <= dbg_wda[1];
+      s_wda2        <= dbg_wda[2];
+      s_wda3        <= dbg_wda[3];
+      s_b3e_w0      <= dbg_b3e_w0;
+      s_b3e_w1      <= dbg_b3e_w1;
+      s_bank        <= dbg_bank;
       // band 8 = lb_nonzero: renderer ever produced a non-black pixel
       // (download liveness is proven by the DLCT/DLWR rows instead)
       s_flags       <= {led_mrom_saw, dbg_vdp_cs_seen, dbg_vdp_write,
@@ -336,13 +370,13 @@ assign BUTTONS = 0;
     p1_hex_row <= hr;
 
     case (hr)
-      4'd0: p1_hex_val <= s_selftest;
-      4'd1: p1_hex_val <= s_postdl;
-      4'd2: p1_hex_val <= s_mrom_word0;
-      4'd3: p1_hex_val <= s_mrom_word1;
-      4'd4: p1_hex_val <= {s_dl_byte0, s_dl_byte1};
-      4'd5: p1_hex_val <= s_dl_count[23:8];
-      4'd6: p1_hex_val <= s_dl_written[23:8];
+      4'd0: p1_hex_val <= s_b3e_w0;               // bank-3E window word0 (expect 4D55)
+      4'd1: p1_hex_val <= s_b3e_w1;               // bank-3E window word1 (expect 5345)
+      4'd2: p1_hex_val <= s_bank;                 // {bank write count, current bank}
+      4'd3: p1_hex_val <= s_wda3;                 // window word 3 (unfrozen)
+      4'd4: p1_hex_val <= {s_subctl, s_iack1};    // SCTL/IAK1
+      4'd5: p1_hex_val <= s_wcnt;                 // WCNT: GFX-window read count
+      4'd6: p1_hex_val <= s_srrc;                 // SRRC: main sr3 read acks
       4'd7: p1_hex_val <= {s_reset_count, s_dl_dropped[7:0]};
       default: p1_hex_val <= s_fsm_info;
     endcase

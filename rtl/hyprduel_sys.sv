@@ -70,7 +70,18 @@ module hyprduel_sys #(
     output logic [15:0] dbg_mrom_word0,
     output logic [15:0] dbg_mrom_word1,
     output logic [15:0] dbg_mrom_word2,
-    output logic [15:0] dbg_mrom_word3
+    output logic [15:0] dbg_mrom_word3,
+    output logic [15:0] dbg_sack_cnt,   // sr3 acks granted to the sub CPU
+    output logic [15:0] dbg_palw,       // nonzero palette writes (from VDP)
+    output logic [15:0] dbg_hshk,       // last data written to sr3 word 0xD9A6 (0xFFF34C)
+    output logic [7:0]  dbg_iack1,      // sub CPU level-1 (YM) interrupt acks
+    output logic [15:0] dbg_wadr,       // last GFX-window read addr (word offset)
+    output logic [15:0] dbg_wcnt,       // GFX-window read count
+    output logic [15:0] dbg_srrc,       // main CPU sr3 read acks
+    output logic [15:0] dbg_wda [0:3],  // window read data at offsets 0,2,4,6
+    output logic [15:0] dbg_b3e_w0,     // first window word0 read with bank==0x3E
+    output logic [15:0] dbg_b3e_w1,     // first window word1 read with bank==0x3E
+    output logic [15:0] dbg_bank        // {bank write count, current bank}
 );
 
   // ------------------------------------------------------------------
@@ -167,7 +178,8 @@ module hyprduel_sys #(
     .o_dbg_vdp_write(dbg_vdp_write),
     .o_dbg_line_start(dbg_line_start),
     .o_dbg_rnd_done(dbg_rnd_done),
-    .o_dbg_lb_nonzero(dbg_lb_nonzero)
+    .o_dbg_lb_nonzero(dbg_lb_nonzero),
+    .o_dbg_palw(dbg_palw)
   );
 
 
@@ -585,5 +597,45 @@ module hyprduel_sys #(
   assign o_sr3_wdata = sr3_grant_s ? s_dout      : m_dout;
   assign o_sr3_be    = sr3_grant_s ? {~s_udsn, ~s_ldsn} : {~m_udsn, ~m_ldsn};
   assign o_sr3_we    = sr3_grant_s ? (s_strobe && !s_rw) : (m_strobe && !m_rw);
+
+  // bring-up probes: sub-side sr3 grants, handshake word snoop, YM iacks
+  logic s_iack_d1;
+  always_ff @(posedge clk) begin
+    if (!rst_n) begin
+      dbg_sack_cnt <= '0; dbg_hshk <= 16'hDEAD; dbg_iack1 <= '0; s_iack_d1 <= 1'b0;
+    end else begin
+      if (sr3_s_ack) dbg_sack_cnt <= dbg_sack_cnt + 16'd1;
+      // byte 0xFFF34C -> sr3 word addr (0xFFF34C[17:1]) - 0x2000 = 0x1D9A6
+      if (i_sr3_ack && o_sr3_we && o_sr3_addr == 17'h1D9A6)
+        dbg_hshk <= o_sr3_wdata;
+      s_iack_d1 <= s_iack;
+      if (s_iack && !s_iack_d1 && s_a[3:1] == 3'd1)
+        dbg_iack1 <= dbg_iack1 + 8'd1;
+    end
+  end
+
+  // copy-phase probes: GFX-window (0x460000+) reads and main sr3 reads
+  always_ff @(posedge clk) begin
+    if (!rst_n) begin
+      dbg_wadr <= '0; dbg_wcnt <= '0; dbg_srrc <= '0;
+      dbg_wda[0] <= '0; dbg_wda[1] <= '0; dbg_wda[2] <= '0; dbg_wda[3] <= '0;
+      dbg_b3e_w0 <= 16'hDEAD; dbg_b3e_w1 <= 16'hDEAD; dbg_bank <= '0;
+    end else begin
+      if (vdp_cs && vdp_ack && vdp_rnw_r && vdp_addr[18:17] == 2'b11) begin
+        dbg_wadr <= vdp_addr[16:1];
+        dbg_wcnt <= dbg_wcnt + 16'd1;
+        if (vdp_addr[16:3] == 14'd0)
+          dbg_wda[vdp_addr[2:1]] <= vdp_rdata;
+        // bank-gated capture: first words 0/1 seen while bank == 0x3E
+        if (dbg_bank[7:0] == 8'h3E && vdp_addr[16:1] == 16'd0 && dbg_b3e_w0 == 16'hDEAD)
+          dbg_b3e_w0 <= vdp_rdata;
+        if (dbg_bank[7:0] == 8'h3E && vdp_addr[16:1] == 16'd1 && dbg_b3e_w1 == 16'hDEAD)
+          dbg_b3e_w1 <= vdp_rdata;
+      end
+      if (vdp_cs && vdp_ack && !vdp_rnw_r && vdp_addr == 19'h788AA)
+        dbg_bank <= {dbg_bank[15:8] + 8'd1, vdp_wdata_r[7:0]};
+      if (sr3_m_ack && m_rw) dbg_srrc <= dbg_srrc + 16'd1;
+    end
+  end
 
 endmodule
