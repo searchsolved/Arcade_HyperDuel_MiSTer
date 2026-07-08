@@ -66,7 +66,7 @@ module tb_vdp;
     .i_gfx_size(24'(gfx_size)),
     /* verilator lint_off PINCONNECTEMPTY */
     .o_dbg_vdp_write(), .o_dbg_line_start(),
-    .o_dbg_rnd_done(), .o_dbg_lb_nonzero()
+    .o_dbg_rnd_done(), .o_dbg_lb_nonzero(), .o_dbg_palw()
     /* verilator lint_on PINCONNECTEMPTY */
   );
 
@@ -240,7 +240,18 @@ module tb_vdp;
     $display("tb_vdp: rendered %s -> %s", scene, outpath);
     $display("tb_vdp: max line render = %0d cycles (line %0d), budget/line = %0d, fifo overrun=%0d",
              rt_max, rt_line_of_max, 424*32, dut.rnd_overrun);
+    $display("tb_vdp: bpp8 probe: fetched=%0d opaque_px=%0d", bpp8_fetch, bpp8_px);
     $finish;
+  end
+
+  // 8bpp tile probe: count tile fetches flagged 8bpp and opaque 8bpp pixels
+  int bpp8_fetch, bpp8_px;
+  logic bpp8_d;
+  always_ff @(posedge clk) begin
+    bpp8_d <= dut.u_render.cache_bpp8;
+    if (dut.u_render.cache_bpp8 && !bpp8_d) bpp8_fetch <= bpp8_fetch + 1;
+    if (dut.u_render.cache_bpp8 && dut.u_render.tile_opaque
+        && dut.u_render.st == dut.u_render.ST_L_PIX) bpp8_px <= bpp8_px + 1;
   end
 
 endmodule

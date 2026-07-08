@@ -94,7 +94,10 @@ module hyprduel_sdram #(
     output logic [15:0] dbg_postdl,       // post-download GFX region probe (expect 0x3422)
     output logic [23:0] dbg_dl_written,   // SDRAM write CAS issued for DL owner
     output logic [15:0] dbg_dl_dropped,   // bytes lost to FIFO overflow (saturating)
-    output logic [15:0] dbg_fsm_info      // CMD_REF issue counter (live = refresh alive)
+    output logic [15:0] dbg_fsm_info,     // CMD_REF issue counter (live = refresh alive)
+    output logic [15:0] dbg_sums,         // checksum self-test: 64 words via single reads
+    output logic [15:0] dbg_sumb1,        // same 64 words via one 64-word burst, pass 1
+    output logic [15:0] dbg_sumb2         // burst pass 2 (mismatch vs pass 1 = marginal capture)
 );
 
   // word-address bases (byte base / 2)
@@ -169,6 +172,19 @@ module hyprduel_sdram #(
   logic        sr3_busy;           // sr3 op accepted, ack not yet issued
   logic        probe_pend;         // GFX probe read request
   logic        probe_fly;          // GFX probe read in flight (ret tag 6)
+  logic [23:0] probe_addr;         // word address for the next probe read
+  // checksum self-test (runs once after the post-download probe):
+  // 64 GFX words at SUM_BASE summed three ways - single reads (tag 6),
+  // then two identical 64-word bursts (tag 7). Content wrong -> SUMS bad;
+  // deterministic burst bug -> SUMB1 == SUMB2 both bad; marginal capture
+  // -> SUMB1 != SUMB2.
+  localparam logic [23:0] SUM_BASE = GFX_WBASE + 24'h032000;
+  logic [3:0]  sum_st;
+  logic [6:0]  sum_i;
+  logic [15:0] sum_acc;
+  logic        sumb_pend;          // burst-pass request
+  logic        sum_fly;            // burst pass in flight (ret tag 7)
+  logic [16:0] sum_wait;           // no-download fallback timer (sim preload)
   logic [16:0] sr3_addr_q;
   logic [15:0] sr3_wdata_q;
   logic [1:0]  sr3_be_q;
@@ -235,6 +251,16 @@ module hyprduel_sdram #(
       dbg_refc     <= '0;
       pdl_st       <= 2'd0;
       early_st     <= 2'd0;
+      dbg_sums     <= 16'hDEAD;
+      dbg_sumb1    <= 16'hDEAD;
+      dbg_sumb2    <= 16'hDEAD;
+      sum_st       <= 4'd0;
+      sum_i        <= '0;
+      sum_acc      <= '0;
+      sumb_pend    <= 1'b0;
+      sum_fly      <= 1'b0;
+      sum_wait     <= '0;
+      probe_addr   <= '0;
     end else begin
       // EARLY readback probe: read word 0 back microseconds after its two
       // bytes are written, while the download is still streaming. Compared
@@ -259,12 +285,61 @@ module hyprduel_sdram #(
       // gfxrom.bin; anything else means the MRA GFX interleave is wrong.
       if (pdl_st == 2'd0 && dbg_dl_saw && !i_dl_active && dlf_empty) begin
         probe_pend <= 1'b1;
+        probe_addr <= GFX_WBASE + 24'd4;
         pdl_st     <= 2'd1;
       end
       if (land_tag == 3'd6) begin
-        dbg_postdl <= dq_in;
         probe_fly  <= 1'b0;
-        pdl_st     <= 2'd2;
+        if (pdl_st == 2'd1) begin
+          dbg_postdl <= dq_in;
+          pdl_st     <= 2'd2;
+        end else begin
+          // checksum single-read landing
+          sum_acc <= sum_acc + dq_in;
+          sum_i   <= sum_i + 7'd1;
+          if (sum_i == 7'd63) sum_st <= 4'd3;
+          else                sum_st <= 4'd1;
+        end
+      end
+
+      // checksum burst landing (tag 7)
+      if (land_tag == 3'd7) begin
+        sum_acc <= sum_acc + dq_in;
+        sum_i   <= sum_i + 7'd1;
+        if (sum_i == 7'd63) sum_st <= (sum_st == 4'd4) ? 4'd5 : 4'd7;
+      end
+
+      // checksum self-test sequencer
+      if (o_ready && !dbg_dl_saw && !sum_wait[16])
+        sum_wait <= sum_wait + 17'd1;
+      case (sum_st)
+        4'd0: if (pdl_st == 2'd2 || sum_wait[16]) begin
+                sum_i <= '0; sum_acc <= '0; sum_st <= 4'd1;
+              end
+        4'd1: if (!probe_pend && !probe_fly) begin
+                probe_pend <= 1'b1;
+                probe_addr <= SUM_BASE + 24'(sum_i);
+                sum_st     <= 4'd2;
+              end
+        // 4'd2: waiting for the tag-6 landing above
+        4'd3: begin
+                dbg_sums <= sum_acc;
+                sum_i <= '0; sum_acc <= '0;
+                sumb_pend <= 1'b1; sum_st <= 4'd4;
+              end
+        // 4'd4: burst pass 1 in flight (tag-7 landings above)
+        4'd5: begin
+                dbg_sumb1 <= sum_acc;
+                sum_i <= '0; sum_acc <= '0;
+                sumb_pend <= 1'b1; sum_st <= 4'd6;
+              end
+        4'd6: sum_st <= 4'd7;   // hop so the ==63 landing maps pass 2 -> done
+        // 4'd7: burst pass 2 in flight
+        default: ;
+      endcase
+      if (sum_st == 4'd7 && sum_i == 7'd64) begin
+        dbg_sumb2 <= sum_acc;
+        sum_st <= 4'd8;
       end
 
       // DEBUG: capture download writes; byte0/1 hold the FIRST BYTE'S
@@ -381,8 +456,15 @@ module hyprduel_sdram #(
             owner <= OWN_MROM;                 // rides the mrom read path
             probe_fly <= 1'b1;                 // but lands with tag 6
             probe_pend <= 1'b0;
-            cur_word <= GFX_WBASE + 24'd4;
+            cur_word <= probe_addr;
             words_left <= 7'd1;
+            st <= ST_ACT;
+          end else if (sumb_pend) begin
+            owner <= OWN_GFX;                  // rides the gfx burst path
+            sum_fly <= 1'b1;                   // but lands with tag 7
+            sumb_pend <= 1'b0;
+            cur_word <= SUM_BASE;
+            words_left <= 7'd64;
             st <= ST_ACT;
           end
         end
@@ -422,11 +504,11 @@ module hyprduel_sdram #(
             sr3_wr_done <= 1'b1;                     // landing block pulses ack
             wait_cnt <= 4'd3;                        // tWR + tRP
             st <= ST_WWAIT;
-          end else if (owner != OWN_GFX || bf_room) begin
+          end else if (owner != OWN_GFX || sum_fly || bf_room) begin
             cmd <= CMD_READ;
             SDRAM_A <= {(cas_left == 6'd1) ? 4'b0010 : 4'b0000,
                         cur_word[8:0]};              // AP on the last CAS
-            ret_tag[0] <= (owner == OWN_GFX)  ? 3'd1 :
+            ret_tag[0] <= (owner == OWN_GFX)  ? (sum_fly ? 3'd7 : 3'd1) :
                           (owner == OWN_MROM) ? (probe_fly ? 3'd6 : 3'd2) :
                           (owner == OWN_SR3)  ? (sr3_we_q ? 3'd5 : 3'd4) : 3'd3;
             if (owner == OWN_OKI) oki_fly <= oki_addr_q;
@@ -442,7 +524,10 @@ module hyprduel_sdram #(
                 wait_cnt <= 4'd1;                    // tRP after AP
                 st <= ST_ROWGAP;                     // row-crossing re-ACT
               end else begin
-                if (owner == OWN_GFX)  gfx_pend  <= 1'b0;
+                if (owner == OWN_GFX) begin
+                  if (sum_fly) sum_fly <= 1'b0;
+                  else         gfx_pend <= 1'b0;
+                end
                 if (owner == OWN_MROM && !probe_fly) mrom_pend <= 1'b0;
                 if (owner == OWN_OKI)  oki_pend  <= 1'b0;
                 wait_cnt <= 4'd2;                    // cover tRP

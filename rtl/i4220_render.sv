@@ -528,6 +528,16 @@ module i4220_render #(
           owv = owf_q[27:16];
           out_h <= ohv;
           out_w <= owv;
+`ifdef VERILATOR
+          if (line_r == 8'd100 && $test$plusargs("SPRDBG"))
+            $display("SPRDBG scur=%0d sx0=%0d sy0=%0d ow=%0d oh=%0d zoom=%05x sgfx=%06x ext=%0d skip=%0d",
+                     scur, sx0, sy0, owv, ohv, szoom, sgfx,
+                     ext_q,
+                     (ohv == 0 || owv == 0 ||
+                      (32'(sgfx) + 32'(ext_q) - 1 >= 32'(i_gfx_size)) ||
+                      int'(line_r) < sy0 || int'(line_r) >= sy0 + int'(ohv) ||
+                      sx0 >= WIDTH || sx0 + int'(owv) <= 0));
+`endif
           // coverage/bounds tests BEFORE the serial divider: sprites that
           // do not touch this line must cost only a few cycles each
           if (ohv == 0 || owv == 0 ||
@@ -687,5 +697,16 @@ module i4220_render #(
       endcase
     end
   end
+
+`ifdef VERILATOR
+  // cycle trace of the sprite attribute read handshake (debug only)
+  always_ff @(posedge clk) begin
+    if ($test$plusargs("SPRTRC") && line_r == 8'd100 && scur < 10'd2 &&
+        (st == ST_S_RD0 || st == ST_S_RD1 || st == ST_S_RD2 ||
+         st == ST_S_RD3 || st == ST_S_RD4 || st == ST_S_ZOOM))
+      $display("SPRTRC st=%s addr=%03x data=%04x scur=%0d",
+               st.name(), o_spr_addr, i_spr_data, scur);
+  end
+`endif
 
 endmodule

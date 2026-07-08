@@ -377,10 +377,13 @@ module i4220_vdp #(
   logic [11:0] cp_cnt;
   logic [15:0] cp_q;
 
+  // read data lags cp_cnt by TWO cycles (registered BRAM q, then cp_q),
+  // so the write address must lag by two as well: source word k is read
+  // at cnt k, in spr_live_b_q at k+1, in cp_q at k+2, written at cnt k+2
   assign spr_live_b_addr = cp_cnt[10:0];
-  assign spr_buf_a_addr  = (cp_cnt != 0) ? (cp_cnt[10:0] - 11'd1) : 11'd0;
+  assign spr_buf_a_addr  = 11'(cp_cnt - 12'd2);
   assign spr_buf_a_d     = cp_q;
-  assign spr_buf_a_we    = cp_run && (cp_cnt != 0);
+  assign spr_buf_a_we    = cp_run && (cp_cnt >= 12'd2);
 
   always_ff @(posedge clk) begin
     if (!rst_n) begin
@@ -392,7 +395,7 @@ module i4220_vdp #(
         cp_cnt <= '0;
       end else if (cp_run) begin
         cp_q <= spr_live_b_q;
-        if (cp_cnt == 12'd2048) cp_run <= 1'b0;
+        if (cp_cnt == 12'd2049) cp_run <= 1'b0;
         cp_cnt <= cp_cnt + 12'd1;
       end
     end

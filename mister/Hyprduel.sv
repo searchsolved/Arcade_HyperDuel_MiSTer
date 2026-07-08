@@ -166,12 +166,14 @@ assign BUTTONS = 0;
     .dbg_dl_byte1(dbg_dl_byte1), .dbg_dl_count(dbg_dl_count),
     .dbg_selftest(dbg_selftest), .dbg_postdl(dbg_postdl),
     .dbg_dl_written(dbg_dl_written), .dbg_dl_dropped(dbg_dl_dropped),
-    .dbg_fsm_info(dbg_fsm_info)
+    .dbg_fsm_info(dbg_fsm_info),
+    .dbg_sums(dbg_sums), .dbg_sumb1(dbg_sumb1), .dbg_sumb2(dbg_sumb2)
   );
   wire dbg_dl_saw;
   wire [7:0] dbg_dl_byte0, dbg_dl_byte1;
   wire [23:0] dbg_dl_count, dbg_dl_written;
   wire [15:0] dbg_selftest, dbg_postdl, dbg_fsm_info;
+  wire [15:0] dbg_sums, dbg_sumb1, dbg_sumb2;
   wire [15:0] dbg_dl_dropped;
 
   // ------------------------------------------------------------------
@@ -299,6 +301,7 @@ assign BUTTONS = 0;
   reg [15:0] s_wadr, s_wcnt, s_srrc;
   reg [15:0] s_wda0, s_wda1, s_wda2, s_wda3;
   reg [15:0] s_b3e_w0, s_b3e_w1, s_bank;
+  reg [15:0] s_sums, s_sumb1, s_sumb2;
   reg [7:0]  s_reset_count;
   reg [7:0]  s_flags;
   always @(posedge clk_sys)
@@ -329,6 +332,9 @@ assign BUTTONS = 0;
       s_b3e_w0      <= dbg_b3e_w0;
       s_b3e_w1      <= dbg_b3e_w1;
       s_bank        <= dbg_bank;
+      s_sums        <= dbg_sums;
+      s_sumb1       <= dbg_sumb1;
+      s_sumb2       <= dbg_sumb2;
       // band 8 = lb_nonzero: renderer ever produced a non-black pixel
       // (download liveness is proven by the DLCT/DLWR rows instead)
       s_flags       <= {led_mrom_saw, dbg_vdp_cs_seen, dbg_vdp_write,
@@ -370,10 +376,10 @@ assign BUTTONS = 0;
     p1_hex_row <= hr;
 
     case (hr)
-      4'd0: p1_hex_val <= s_b3e_w0;               // bank-3E window word0 (expect 4D55)
-      4'd1: p1_hex_val <= s_b3e_w1;               // bank-3E window word1 (expect 5345)
-      4'd2: p1_hex_val <= s_bank;                 // {bank write count, current bank}
-      4'd3: p1_hex_val <= s_wda3;                 // window word 3 (unfrozen)
+      4'd0: p1_hex_val <= s_sums;                 // single-read checksum (expect BE3A)
+      4'd1: p1_hex_val <= s_sumb1;                // burst checksum pass 1 (expect BE3A)
+      4'd2: p1_hex_val <= s_sumb2;                // burst checksum pass 2 (expect BE3A)
+      4'd3: p1_hex_val <= s_b3e_w0;               // bank-3E window word0 (expect 4D55)
       4'd4: p1_hex_val <= {s_subctl, s_iack1};    // SCTL/IAK1
       4'd5: p1_hex_val <= s_wcnt;                 // WCNT: GFX-window read count
       4'd6: p1_hex_val <= s_srrc;                 // SRRC: main sr3 read acks

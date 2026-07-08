@@ -534,6 +534,8 @@ module tb_system;
              dut.dbg_wda[0], dut.dbg_wda[1], dut.dbg_wda[2], dut.dbg_wda[3]);
     $display("hwprobes4: b3e_w0=%04x b3e_w1=%04x bank=%04x",
              dut.dbg_b3e_w0, dut.dbg_b3e_w1, dut.dbg_bank);
+    $display("hwprobes5: sums=%04x sumb1=%04x sumb2=%04x (expect be3a x3)",
+             u_sdr.dbg_sums, u_sdr.dbg_sumb1, u_sdr.dbg_sumb2);
     $display("status reads=%0d flagA_set=%0d flagB_set=%0d busy_set=%0d",
              st_reads, st_flagA, st_flagB, st_busy);
     $write("status last16:");
