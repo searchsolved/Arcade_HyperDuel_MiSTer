@@ -140,6 +140,16 @@ boot: $(BUILD)/obj_sys/Vtb_system $(BUILD)/mame/mainrom.hex
 		$(if $(AUDIOSPLIT),+AUDIOSPLIT=$(AUDIOSPLIT)) \
 		$(if $(SDRAM),+SDRAM=$(SDRAM)) $(PLUSARGS)
 
+# lockstep attract parity: run MAME + sim, diff screenshots frame by frame
+attract-mame:
+	DUMP_DIR=$(BUILD)/mame/attract DUMP_EVERY=30 DUMP_TOTAL=$(or $(FRAMES),620) \
+	  mame hyprduel -rompath ../roms -video none -sound none -nothrottle \
+	  -autoboot_script mame/dump_attract.lua
+
+attract-diff:
+	python3 diff_attract.py $(BUILD)/mame/attract $(BUILD)/boot_sdram \
+	  --every 30 --max-frame $(or $(FRAMES),620)
+
 $(BUILD)/obj_dl/Vtb_download: tb/tb_download.sv tb/sdram_model.sv ../rtl/hyprduel_sdram.sv
 	$(VERILATOR) --binary --timing -Wno-fatal --timescale 1ns/1ps \
 		--Mdir $(BUILD)/obj_dl \

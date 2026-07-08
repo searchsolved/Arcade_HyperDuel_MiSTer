@@ -438,7 +438,7 @@ module hyprduel_sys #(
   // ------------------------------------------------------------------
   wire [23:0] s_ba = {s_a, 1'b0};
   wire s_sel_vec  = (s_ba < 24'h004000);                       // shared1 shadow
-  wire s_sel_ro3  = (s_ba >= 24'h004000 && s_ba < 24'h008000); // shared3 RO shadow
+  wire s_sel_ro3  = (s_ba >= 24'h004000 && s_ba < 24'h020000); // shared3 RO shadow
   wire s_sel_ym   = (s_ba >= 24'h400000 && s_ba < 24'h400004); // jt51
   wire s_sel_snd  = (s_ba >= 24'h400004 && s_ba < 24'h400010); // OKI stub
   wire s_sel_sr1  = (s_ba >= 24'hC00000 && s_ba < 24'hC08000);
@@ -452,6 +452,54 @@ module hyprduel_sys #(
   sb_e sbst;
   logic [15:0] s_rdata_q;
 
+  // ------------------------------------------------------------------
+  // Sub-CPU shared3 read cache (1024 x 16-bit direct-mapped)
+  // The real board uses dual-port SRAM with zero wait; our SDRAM adds
+  // ~11 clocks per access. This cache serves sub-CPU reads in 1 clock
+  // on hit, cutting the effective slowdown from ~10x to near-zero for
+  // code loops and repeated data reads. Writes from either CPU
+  // invalidate the matching line.
+  // ------------------------------------------------------------------
+  localparam int SR3C_AW = 10;  // 1024 entries
+  localparam int SR3C_TW = 7;   // tag width = 17 - 10
+
+  logic [15:0]       sr3c_data [0:1023];
+  logic [SR3C_TW:0]  sr3c_tag  [0:1023]; // {valid, tag[6:0]}
+
+  wire [SR3C_AW-1:0] sr3c_idx   = sr3_s_addr[SR3C_AW-1:0];
+  wire [SR3C_TW-1:0] sr3c_stag  = sr3_s_addr[16:SR3C_AW];
+  wire               sr3c_valid = sr3c_tag[sr3c_idx][SR3C_TW];
+  wire               sr3c_match = sr3c_valid &&
+                                  (sr3c_tag[sr3c_idx][SR3C_TW-1:0] == sr3c_stag);
+  wire [15:0]        sr3c_rdata = sr3c_data[sr3c_idx];
+
+  // main-CPU sr3 write invalidation: when the main CPU writes shared3,
+  // invalidate the cache line at that address so the sub sees fresh data
+  wire [SR3C_AW-1:0] sr3c_m_idx  = sr3_m_addr[SR3C_AW-1:0];
+  wire               sr3c_m_inv  = sr3_m_ack && !m_rw;
+
+  // sub-CPU sr3 write invalidation
+  wire               sr3c_s_inv  = sr3_s_ack && !s_rw;
+
+  integer sr3c_i;
+  always_ff @(posedge clk) begin
+    if (!rst_n) begin
+      for (sr3c_i = 0; sr3c_i < 1024; sr3c_i = sr3c_i + 1)
+        sr3c_tag[sr3c_i] <= '0;
+    end else begin
+      // fill on SDRAM read completion
+      if (sr3_s_ack && s_rw) begin
+        sr3c_data[sr3c_idx] <= i_sr3_rdata;
+        sr3c_tag[sr3c_idx]  <= {1'b1, sr3c_stag};
+      end
+      // invalidate on writes from either CPU
+      if (sr3c_m_inv)
+        sr3c_tag[sr3c_m_idx] <= '0;
+      if (sr3c_s_inv)
+        sr3c_tag[sr3c_idx] <= '0;
+    end
+  end
+
   always_ff @(posedge clk) begin
     if (!rst_n) begin
       sbst <= SB_IDLE;
@@ -463,17 +511,19 @@ module hyprduel_sys #(
           if (s_strobe && !s_iack) begin
             if (s_rw) begin
               if (s_sel_ro3 || s_sel_sr3) begin
-                sr3_s_req <= 1'b1;
-                sbst <= SB_SR3;
+                if (sr3c_match) begin
+                  s_rdata_q <= sr3c_rdata;
+                  sbst <= SB_ACK;
+                end else begin
+                  sr3_s_req <= 1'b1;
+                  sbst <= SB_SR3;
+                end
               end else
                 sbst <= SB_WAIT;
             end else begin
-              // shared RAM writes: sr1/sr2 commit in TDP blocks below
-              // s_sel_ro3 writes ignored: read-only shadow
-              // s_sel_snd writes ignored (sound stubs)
               if (s_sel_sr3) begin
                 sr3_s_req <= 1'b1;
-                sbst <= SB_SR3;        // sr3 writes go through SDRAM
+                sbst <= SB_SR3;
               end else
                 sbst <= SB_ACK;
             end
@@ -559,14 +609,22 @@ module hyprduel_sys #(
 
   // ------------------------------------------------------------------
   // shared3 SDRAM arbiter (two CPUs, one SDRAM port)
-  // main CPU wins ties; loser stays in its SR3 wait state
+  // Round-robin: the real board uses dual-port SRAM with zero wait for
+  // both CPUs. Our serial SDRAM port must emulate that fairness or the
+  // sub-CPU (which fetches every instruction from sr3) starves under
+  // main-CPU traffic, causing frozen game state and speed surges.
+  // After each grant, the "last served" flag flips so the other CPU
+  // wins on the next simultaneous request.
   // ------------------------------------------------------------------
   logic sr3_m_req, sr3_s_req;      // level-held by each FSM while in MB_SR3/SB_SR3
   logic sr3_grant_s;               // 0 = main granted (or idle), 1 = sub granted
 
   // address computation (reuses the original mapping)
   wire [16:0] sr3_m_addr = m_ba[17:1] - 17'h2000;
-  wire [16:0] sr3_s_addr = s_sel_ro3 ? {4'b0000, s_ba[13:1]}
+  // shadow 0x4000-0x1FFFF aliases 0xFE4000-0xFFFFFF (same sr3 words):
+  // shadow byte A corresponds to main byte (A - 0x4000 + 0xFE4000),
+  // so sr3 word = s_ba[17:1] + 0xE000 for the shadow window
+  wire [16:0] sr3_s_addr = s_sel_ro3 ? (s_ba[17:1] + 17'hE000)
                                      : (s_ba[17:1] - 17'h2000);
 
   // grant decided while idle, held for the whole op; o_sr3_req is
@@ -574,18 +632,27 @@ module hyprduel_sys #(
   // controller can latch the op
   logic sr3_infly;
   logic sr3_req_r;
+  logic sr3_last_s;                // 1 = sub was last served; toggles per grant
   always_ff @(posedge clk) begin
     if (!rst_n) begin
       sr3_grant_s <= 1'b0; sr3_infly <= 1'b0; sr3_req_r <= 1'b0;
+      sr3_last_s <= 1'b0;
     end else if (sr3_infly) begin
       if (i_sr3_ack) begin
         sr3_infly <= 1'b0; sr3_req_r <= 1'b0;
       end
     end else begin
-      if (sr3_m_req) begin
-        sr3_grant_s <= 1'b0; sr3_infly <= 1'b1; sr3_req_r <= 1'b1;
+      if (sr3_m_req && sr3_s_req) begin
+        // both want: serve whoever was NOT served last (round-robin)
+        sr3_grant_s <= sr3_last_s ? 1'b0 : 1'b1;
+        sr3_last_s  <= sr3_last_s ? 1'b0 : 1'b1;
+        sr3_infly   <= 1'b1; sr3_req_r <= 1'b1;
+      end else if (sr3_m_req) begin
+        sr3_grant_s <= 1'b0; sr3_last_s <= 1'b0;
+        sr3_infly <= 1'b1; sr3_req_r <= 1'b1;
       end else if (sr3_s_req) begin
-        sr3_grant_s <= 1'b1; sr3_infly <= 1'b1; sr3_req_r <= 1'b1;
+        sr3_grant_s <= 1'b1; sr3_last_s <= 1'b1;
+        sr3_infly <= 1'b1; sr3_req_r <= 1'b1;
       end
     end
   end

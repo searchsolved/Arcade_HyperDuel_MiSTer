@@ -282,6 +282,26 @@ module tb_system;
     end
   end
 
+  // raster write log (matches MAME's tap_raster.lua format)
+  int raster_fh;
+  initial begin
+    if ($test$plusargs("RASTERLOG")) begin
+      raster_fh = $fopen("build/raster_writes_sim.csv", "w");
+      $fwrite(raster_fh, "frame,vpos,hpos,addr,data\n");
+    end else raster_fh = 0;
+  end
+  always_ff @(posedge clk) begin
+    if (raster_fh != 0 && !dut.m_asn && m_asn_d && !dut.m_rw) begin
+      logic [23:0] wa;
+      wa = {dut.m_a, 1'b0};
+      if ((wa >= 24'h478800 && wa <= 24'h4788ff) ||
+          (wa >= 24'h470000 && wa <= 24'h47001f))
+        $fwrite(raster_fh, "%0d,%0d,%0d,%06x,%04x\n",
+                frames_seen, dut.u_vdp.vcnt, dut.u_vdp.hcnt,
+                wa, dut.m_dout);
+    end
+  end
+
   // sound-path probes
   longint ymwr_cnt, s_iack1_cnt, s_iack2_cnt, ymirq_seen;
   logic [7:0] last_ym_a0_0, last_ym_a0_1;
@@ -395,6 +415,20 @@ module tb_system;
       $fwrite(fh_ym, "%c%c", tap_ym[7:0], tap_ym[15:8]);
     if (fh_oki != 0 && adiv == 0)
       $fwrite(fh_oki, "%c%c", tap_oki[7:0], tap_oki[15:8]);
+  end
+
+  // sr3 arbiter contention counters
+  longint sub_sr3_wait, main_sr3_wait, sub_sr3_grants, main_sr3_grants;
+  always_ff @(posedge clk) begin
+    if (!rst_n) begin
+      sub_sr3_wait <= 0; main_sr3_wait <= 0;
+      sub_sr3_grants <= 0; main_sr3_grants <= 0;
+    end else begin
+      if (dut.sbst == 2'b10 && !dut.sr3_s_ack) sub_sr3_wait <= sub_sr3_wait + 1;
+      if (dut.mbst == 3'b011 && !dut.sr3_m_ack) main_sr3_wait <= main_sr3_wait + 1;
+      if (dut.sr3_s_ack) sub_sr3_grants <= sub_sr3_grants + 1;
+      if (dut.sr3_m_ack) main_sr3_grants <= main_sr3_grants + 1;
+    end
   end
 
   // sub CPU activity trace + per-frame samplers
@@ -536,6 +570,8 @@ module tb_system;
              dut.dbg_b3e_w0, dut.dbg_b3e_w1, dut.dbg_bank);
     $display("hwprobes5: sums=%04x sumb1=%04x sumb2=%04x (expect be3a x3)",
              u_sdr.dbg_sums, u_sdr.dbg_sumb1, u_sdr.dbg_sumb2);
+    $display("sr3arb: sub_wait_cyc=%0d main_wait_cyc=%0d sub_grants=%0d main_grants=%0d",
+             sub_sr3_wait, main_sr3_wait, sub_sr3_grants, main_sr3_grants);
     $display("status reads=%0d flagA_set=%0d flagB_set=%0d busy_set=%0d",
              st_reads, st_flagA, st_flagB, st_busy);
     $write("status last16:");
