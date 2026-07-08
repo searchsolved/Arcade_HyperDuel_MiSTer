@@ -78,6 +78,7 @@ module hyprduel_sys #(
     output logic [15:0] dbg_wadr,       // last GFX-window read addr (word offset)
     output logic [15:0] dbg_wcnt,       // GFX-window read count
     output logic [15:0] dbg_srrc,       // main CPU sr3 read acks
+    output logic [15:0] dbg_ovr,        // dropped render kicks (line overrun)
     output logic [15:0] dbg_wda [0:3],  // window read data at offsets 0,2,4,6
     output logic [15:0] dbg_b3e_w0,     // first window word0 read with bank==0x3E
     output logic [15:0] dbg_b3e_w1,     // first window word1 read with bank==0x3E
@@ -179,7 +180,8 @@ module hyprduel_sys #(
     .o_dbg_line_start(dbg_line_start),
     .o_dbg_rnd_done(dbg_rnd_done),
     .o_dbg_lb_nonzero(dbg_lb_nonzero),
-    .o_dbg_palw(dbg_palw)
+    .o_dbg_palw(dbg_palw),
+    .o_dbg_ovr(dbg_ovr)
   );
 
 

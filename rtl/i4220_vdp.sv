@@ -67,7 +67,8 @@ module i4220_vdp #(
     output logic o_dbg_line_start,   // line_start ever fired
     output logic o_dbg_rnd_done,     // renderer ever completed a line
     output logic o_dbg_lb_nonzero,   // linebuf ever had a nonzero pixel
-    output logic [15:0] o_dbg_palw   // count of nonzero palette writes
+    output logic [15:0] o_dbg_palw,  // count of nonzero palette writes
+    output logic [15:0] o_dbg_ovr    // count of dropped render kicks (overrun)
 );
 
   localparam int H_VIS = 320, H_TOTAL = 424;
@@ -337,6 +338,7 @@ module i4220_vdp #(
     if (!rst_n) begin
       rnd_start <= 1'b0;
       rnd_overrun <= 1'b0;
+      o_dbg_ovr <= '0;
       kf_wr <= '0;
       kf_rd <= '0;
       kf_cnt <= '0;
@@ -345,8 +347,10 @@ module i4220_vdp #(
       // queue at the START of each line for the NEXT line: a full line of
       // render lead (banks are 2 bits, display is never within 1 of render)
       if (ce_pix && hcnt == 9'd0 && 32'(next_v) < V_VIS) begin
-        if (kf_cnt == 3'd4) rnd_overrun <= 1'b1;   // hopelessly behind
-        else begin
+        if (kf_cnt == 3'd4) begin
+          rnd_overrun <= 1'b1;                     // hopelessly behind
+          o_dbg_ovr <= o_dbg_ovr + 16'd1;
+        end else begin
           kick_fifo[kf_wr] <= next_v;
           kf_wr <= kf_wr + 2'd1;
           kf_cnt <= kf_cnt + 3'd1;

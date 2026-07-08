@@ -230,6 +230,7 @@ assign BUTTONS = 0;
     .dbg_sack_cnt(dbg_sack_cnt), .dbg_palw(dbg_palw),
     .dbg_hshk(dbg_hshk), .dbg_iack1(dbg_iack1),
     .dbg_wadr(dbg_wadr), .dbg_wcnt(dbg_wcnt), .dbg_srrc(dbg_srrc),
+    .dbg_ovr(dbg_ovr),
     .dbg_wda(dbg_wda),
     .dbg_b3e_w0(dbg_b3e_w0), .dbg_b3e_w1(dbg_b3e_w1), .dbg_bank(dbg_bank)
   );
@@ -239,7 +240,7 @@ assign BUTTONS = 0;
   wire [15:0] dbg_mrom_word0, dbg_mrom_word1, dbg_mrom_word2, dbg_mrom_word3;
   wire [7:0]  dbg_subctl, dbg_iack1;
   wire [15:0] dbg_sack_cnt, dbg_palw, dbg_hshk;
-  wire [15:0] dbg_wadr, dbg_wcnt, dbg_srrc;
+  wire [15:0] dbg_wadr, dbg_wcnt, dbg_srrc, dbg_ovr;
   wire [15:0] dbg_wda [0:3];
   wire [15:0] dbg_b3e_w0, dbg_b3e_w1, dbg_bank;
 
@@ -333,8 +334,8 @@ assign BUTTONS = 0;
       s_b3e_w1      <= dbg_b3e_w1;
       s_bank        <= dbg_bank;
       s_sums        <= dbg_sums;
-      s_sumb1       <= dbg_sumb1;
-      s_sumb2       <= dbg_sumb2;
+      s_sumb1       <= dbg_ovr;      // overrun count (repurposed row)
+      s_sumb2       <= p1p2;         // live input word (repurposed row)
       // band 8 = lb_nonzero: renderer ever produced a non-black pixel
       // (download liveness is proven by the DLCT/DLWR rows instead)
       s_flags       <= {led_mrom_saw, dbg_vdp_cs_seen, dbg_vdp_write,
@@ -377,8 +378,8 @@ assign BUTTONS = 0;
 
     case (hr)
       4'd0: p1_hex_val <= s_sums;                 // single-read checksum (expect BE3A)
-      4'd1: p1_hex_val <= s_sumb1;                // burst checksum pass 1 (expect BE3A)
-      4'd2: p1_hex_val <= s_sumb2;                // burst checksum pass 2 (expect BE3A)
+      4'd1: p1_hex_val <= s_sumb1;                // OVRC: dropped render kicks
+      4'd2: p1_hex_val <= s_sumb2;                // P1P2: live input word
       4'd3: p1_hex_val <= s_b3e_w0;               // bank-3E window word0 (expect 4D55)
       4'd4: p1_hex_val <= {s_subctl, s_iack1};    // SCTL/IAK1
       4'd5: p1_hex_val <= s_wcnt;                 // WCNT: GFX-window read count
