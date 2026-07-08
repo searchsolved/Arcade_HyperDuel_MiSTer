@@ -125,7 +125,7 @@ module i4220_render #(
     ST_L_TT1, ST_L_TT2, ST_L_TT3,
     ST_L_GRCV,
     ST_S_RD0, ST_S_RD1, ST_S_RD2, ST_S_RD3, ST_S_RD4,
-    ST_S_ZOOM, ST_S_COVER, ST_S_DIV, ST_S_GREQ, ST_S_GMUL, ST_S_GISS, ST_S_GRCV,
+    ST_S_ZOOM, ST_S_COVER, ST_S_COVER2, ST_S_DIV, ST_S_GREQ, ST_S_GMUL, ST_S_GISS, ST_S_GRCV,
     ST_S_PRIME, ST_S_PRIM2, ST_S_EMIT,
     ST_L_TT3B,
     ST_RESOLVE
@@ -170,6 +170,8 @@ module i4220_render #(
   logic [23:0] dx_q, dy_q;
   logic [11:0] rowsel_q;           // pipelined row selection for ROM addr
   logic [35:0] yidx_q;             // pipelined zoom-scaled row index
+  logic [30:0] ohf_q, owf_q;       // COVER -> COVER2 registered size products
+  logic [25:0] ext_q;              // registered ROM extent (bounds check)
   logic [11:0] s_xs;               // pixel-index multiplier input (v or W-1-v)
   logic [35:0] s_xi;               // running product xs*dx; steps by +-dx per pixel
   wire  [11:0] s_pixidx = s_xi[27:16];   // current sprite pixel index
@@ -276,6 +278,7 @@ module i4220_render #(
               : (st == ST_S_PRIME || st == ST_S_PRIM2) ? 9'(sx0 + xo)
               : (st == ST_S_RD1 || st == ST_S_RD2 || st == ST_S_RD3 ||
                  st == ST_S_RD4 || st == ST_S_ZOOM || st == ST_S_COVER ||
+                 st == ST_S_COVER2 ||
                  st == ST_S_DIV || st == ST_S_GREQ || st == ST_S_GRCV)
                 ? ((sx0 < 0) ? 9'd0 : 9'(sx0))
               : xtrack;
@@ -504,30 +507,33 @@ module i4220_render #(
         end
 
         ST_S_COVER: begin
-          logic [30:0] oh_full, ow_full;
+          // stage 1: register the three size products and the screen
+          // position; the coverage tests branch on registered values
+          // next cycle (the multiply -> compare -> enable cone failed
+          // timing as a single cycle)
+          ohf_q <= 31'(szoom) * 31'(sh_pix) + 31'h8000;
+          owf_q <= 31'(szoom) * 31'(sw_pix) + 31'h8000;
+          ext_q <= s_bpp8 ? 26'(sw_pix) * 26'(sh_pix)
+                          : 26'(sw_pix >> 1) * 26'(sh_pix);
+          sx0 <= int'({21'd0, sw0[10:0]})
+              - (int'({16'd0, i_spr_xoff}) - (int'({16'd0, i_screen_xoff}) + 1));
+          sy0 <= int'({22'd0, sw1[9:0]})
+              - (int'({16'd0, i_spr_yoff}) - (int'({16'd0, i_screen_yoff}) + 1));
+          st <= ST_S_COVER2;
+        end
+
+        ST_S_COVER2: begin
           logic [11:0] ohv, owv;
-          logic [25:0] extent;
-          int sxv, syv;
-          oh_full = 31'(szoom) * 31'(sh_pix) + 31'h8000;
-          ow_full = 31'(szoom) * 31'(sw_pix) + 31'h8000;
-          ohv = oh_full[27:16];
-          owv = ow_full[27:16];
+          ohv = ohf_q[27:16];
+          owv = owf_q[27:16];
           out_h <= ohv;
           out_w <= owv;
-          sxv = int'({21'd0, sw0[10:0]})
-              - (int'({16'd0, i_spr_xoff}) - (int'({16'd0, i_screen_xoff}) + 1));
-          syv = int'({22'd0, sw1[9:0]})
-              - (int'({16'd0, i_spr_yoff}) - (int'({16'd0, i_screen_yoff}) + 1));
-          sx0 <= sxv;
-          sy0 <= syv;
-          extent = s_bpp8 ? 26'(sw_pix) * 26'(sh_pix)
-                          : 26'(sw_pix >> 1) * 26'(sh_pix);
           // coverage/bounds tests BEFORE the serial divider: sprites that
           // do not touch this line must cost only a few cycles each
           if (ohv == 0 || owv == 0 ||
-              (32'(sgfx) + 32'(extent) - 1 >= 32'(i_gfx_size)) ||
-              int'(line_r) < syv || int'(line_r) >= syv + int'(ohv) ||
-              sxv >= WIDTH || sxv + int'(owv) <= 0) begin
+              (32'(sgfx) + 32'(ext_q) - 1 >= 32'(i_gfx_size)) ||
+              int'(line_r) < sy0 || int'(line_r) >= sy0 + int'(ohv) ||
+              sx0 >= WIDTH || sx0 + int'(owv) <= 0) begin
             scur <= scur + 10'd1;
             st <= ST_S_RD0;
           end else if (szoom == 20'h10000) begin

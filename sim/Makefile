@@ -137,7 +137,7 @@ boot: $(BUILD)/obj_sys/Vtb_system $(BUILD)/mame/mainrom.hex
 		+FRAMES=$(or $(FRAMES),240) +DUMPEVERY=30 \
 		$(if $(AUDIODUMP),+AUDIODUMP=$(AUDIODUMP)) \
 		$(if $(AUDIOSPLIT),+AUDIOSPLIT=$(AUDIOSPLIT)) \
-		$(if $(SDRAM),+SDRAM=$(SDRAM))
+		$(if $(SDRAM),+SDRAM=$(SDRAM)) $(PLUSARGS)
 
 $(BUILD)/obj_dl/Vtb_download: tb/tb_download.sv tb/sdram_model.sv ../rtl/hyprduel_sdram.sv
 	$(VERILATOR) --binary --timing -Wno-fatal --timescale 1ns/1ps \

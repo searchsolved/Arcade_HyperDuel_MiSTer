@@ -555,19 +555,31 @@ module hyprduel_sys #(
   wire [16:0] sr3_s_addr = s_sel_ro3 ? {4'b0000, s_ba[13:1]}
                                      : (s_ba[17:1] - 17'h2000);
 
+  // grant decided while idle, held for the whole op; o_sr3_req is
+  // registered so the addr/wdata/we mux is stable before the SDRAM
+  // controller can latch the op
+  logic sr3_infly;
+  logic sr3_req_r;
   always_ff @(posedge clk) begin
-    if (!rst_n) sr3_grant_s <= 1'b0;
-    else if (i_sr3_ack) sr3_grant_s <= 1'b0;  // release on ack
-    else if (!o_sr3_req) begin  // idle: pick next
-      if (sr3_m_req) sr3_grant_s <= 1'b0;
-      else if (sr3_s_req) sr3_grant_s <= 1'b1;
+    if (!rst_n) begin
+      sr3_grant_s <= 1'b0; sr3_infly <= 1'b0; sr3_req_r <= 1'b0;
+    end else if (sr3_infly) begin
+      if (i_sr3_ack) begin
+        sr3_infly <= 1'b0; sr3_req_r <= 1'b0;
+      end
+    end else begin
+      if (sr3_m_req) begin
+        sr3_grant_s <= 1'b0; sr3_infly <= 1'b1; sr3_req_r <= 1'b1;
+      end else if (sr3_s_req) begin
+        sr3_grant_s <= 1'b1; sr3_infly <= 1'b1; sr3_req_r <= 1'b1;
+      end
     end
   end
 
   wire sr3_m_ack = i_sr3_ack && !sr3_grant_s;
   wire sr3_s_ack = i_sr3_ack && sr3_grant_s;
 
-  assign o_sr3_req = sr3_m_req || sr3_s_req;
+  assign o_sr3_req = sr3_req_r;
 
   assign o_sr3_addr  = sr3_grant_s ? sr3_s_addr  : sr3_m_addr;
   assign o_sr3_wdata = sr3_grant_s ? s_dout      : m_dout;

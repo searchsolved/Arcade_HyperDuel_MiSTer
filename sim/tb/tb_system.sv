@@ -415,8 +415,16 @@ module tb_system;
       $display("MSAMP %s a=%06x wd=%04x", dut.m_rw ? "R" : "W",
                {dut.m_a, 1'b0}, dut.m_dout);
     end
+    // one-shot frozen-bus dump: sub CPU stuck mid-cycle never produces AS edges
+    if (frames_seen == samp_frame && !stuck_dumped) begin
+      stuck_dumped <= 1'b1;
+      $display("STUCK sub: asn=%0d rw=%0d a=%06x sbst=%0d s_req=%0d m_req=%0d grant_s=%0d ipl=%0d",
+               dut.s_asn, dut.s_rw, {dut.s_a, 1'b0}, dut.sbst,
+               dut.sr3_s_req, dut.sr3_m_req, dut.sr3_grant_s, dut.s_ipl);
+    end
   end
   int sub_samp, main_samp;
+  logic stuck_dumped;
 
   task automatic dump_state(input string outdir, input int n);
     int fh;
