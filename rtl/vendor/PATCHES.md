@@ -20,3 +20,23 @@ guarantee on the col-2/3 `case (1'b1)` in ccrTable, so Quartus 17.0.2
 inferred a latch inside always_comb (Error 10166). Restored the
 commented-out `default: ccrMask = CUNUSED;` which is behavior-neutral
 (the branch was unreachable under the original unique semantics).
+
+## jt6295_adpcm.v ramstyle attributes (2026-07-06)
+Added `(* ramstyle = "logic" *)` to `lut[0:48]` and `gain_lut[0:15]`.
+Reason: Quartus 17.0 inferred the 49-entry lut as a memory, padded the
+depth to 64 but emitted a 49-deep .mif (Critical Warning 127005 depth
+mismatch), immediately before quartus_map died with an access violation
+(compile 7). Both tables are tiny; keeping them in logic is what
+compile 6 did anyway ("uninferred, inappropriate RAM size") and
+sidesteps the buggy path. Verilator ignores the attribute; no
+functional change.
+
+## fx68k.sv packed structs made Verilator-only (2026-07-06)
+The 2026-07-04 packed-struct patch is now wrapped in `ifdef VERILATOR`
+so Quartus elaborates the upstream UNPACKED structs. Working theory for
+the 1h / 20-50GB Quartus 17 elaboration phase: s_nanod is ~90 fields
+referenced throughout two CPU instances, and packing it turns every
+field reference into part-select arithmetic in the Quartus front end.
+Upstream unpacked structs are what every other MiSTer fx68k core
+compiles. Verilator sees the packed form, unchanged, so sim behaviour
+is bit-identical.

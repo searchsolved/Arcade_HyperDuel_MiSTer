@@ -6,6 +6,8 @@
 set_global_assignment -name SYSTEMVERILOG_FILE ../rtl/i4220_render.sv
 set_global_assignment -name SYSTEMVERILOG_FILE ../rtl/i4220_blitter.sv
 set_global_assignment -name SYSTEMVERILOG_FILE ../rtl/i4220_vdp.sv
+set_global_assignment -name SYSTEMVERILOG_FILE ../rtl/hd_dpram.sv
+set_global_assignment -name SYSTEMVERILOG_FILE ../rtl/hd_tdpram.sv
 set_global_assignment -name SYSTEMVERILOG_FILE ../rtl/hyprduel_sys.sv
 set_global_assignment -name SYSTEMVERILOG_FILE ../rtl/hyprduel_sdram.sv
 

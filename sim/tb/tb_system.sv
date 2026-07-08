@@ -54,6 +54,36 @@ module tb_system;
   wire [7:0]  rom_data_mx   = (use_sdram != 0) ? ctl_gfx_data   : rom_data;
   wire        rom_valid_mx  = (use_sdram != 0) ? ctl_gfx_valid  : rom_valid;
 
+  // shared3 SDRAM port wires
+  wire        sr3_req, sr3_we;
+  wire [16:0] sr3_addr;
+  wire [15:0] sr3_wdata;
+  wire  [1:0] sr3_be;
+  logic [15:0] ctl_sr3_rdata;
+  logic        ctl_sr3_ack;
+
+  // shared3 behavioral server (non-SDRAM path)
+  logic [15:0] shared3_mem [0:57343];
+  logic        sr3_p1;
+  logic [15:0] sr3_rdata_ideal;
+  logic        sr3_ack_ideal;
+  always_ff @(posedge clk) begin
+    sr3_ack_ideal <= 1'b0;
+    sr3_p1 <= sr3_req && !sr3_p1 && !sr3_ack_ideal;
+    if (sr3_p1) begin
+      if (sr3_we) begin
+        if (sr3_be[1]) shared3_mem[sr3_addr][15:8] <= sr3_wdata[15:8];
+        if (sr3_be[0]) shared3_mem[sr3_addr][7:0]  <= sr3_wdata[7:0];
+      end else begin
+        sr3_rdata_ideal <= shared3_mem[sr3_addr];
+      end
+      sr3_ack_ideal <= 1'b1;
+    end
+  end
+
+  wire [15:0] sr3_rdata_mx = (use_sdram != 0) ? ctl_sr3_rdata : sr3_rdata_ideal;
+  wire        sr3_ack_mx   = (use_sdram != 0) ? ctl_sr3_ack   : sr3_ack_ideal;
+
   hyprduel_sys #(.GFX_AW(GFX_AW), .P_PIXDIV(16)) dut (
     .clk(clk), .rst_n(rst_n_sys),
     .o_hs(hs), .o_vs(vs), .o_de(de), .o_ce_pix(ce_pix),
@@ -65,10 +95,20 @@ module tb_system;
     .o_mrom_rd(mrom_rd), .o_mrom_addr(mrom_addr),
     .i_mrom_data(mrom_data_mx), .i_mrom_valid(mrom_valid_mx),
     .o_oki_addr(oki_addr), .i_oki_data(oki_data_mx), .i_oki_ok(oki_ok_mx),
+    .o_sr3_req(sr3_req), .o_sr3_we(sr3_we), .o_sr3_addr(sr3_addr),
+    .o_sr3_wdata(sr3_wdata), .o_sr3_be(sr3_be),
+    .i_sr3_rdata(sr3_rdata_mx), .i_sr3_ack(sr3_ack_mx),
     .o_rom_req(rom_req), .o_rom_addr(rom_addr), .o_rom_len(rom_len),
     .i_rom_data(rom_data_mx), .i_rom_valid(rom_valid_mx),
     .i_gfx_size(24'(gfx_size)),
-    .dbg_subctl(dbg_subctl), .dbg_sub_in_reset(dbg_subrst)
+    .dbg_subctl(dbg_subctl), .dbg_sub_in_reset(dbg_subrst),
+    /* verilator lint_off PINCONNECTEMPTY */
+    .dbg_vdp_write(), .dbg_line_start(),
+    .dbg_rnd_done(), .dbg_lb_nonzero(),
+    .dbg_cpu_past_vectors(), .dbg_vdp_cs_seen(),
+    .dbg_mrom_word0(), .dbg_mrom_word1(),
+    .dbg_mrom_word2(), .dbg_mrom_word3()
+    /* verilator lint_on PINCONNECTEMPTY */
   );
 
   // SDRAM controller + behavioral model (active when +SDRAM=1)
@@ -90,16 +130,26 @@ module tb_system;
     .o_mrom_data(ctl_mrom_data), .o_mrom_valid(ctl_mrom_valid),
     .i_oki_addr(oki_addr),
     .o_oki_data(ctl_oki_data), .o_oki_ok(ctl_oki_ok),
-    .i_dl_wr(1'b0), .i_dl_addr('0), .i_dl_data('0), .o_dl_busy(),
+    .i_sr3_req(sr3_req && use_sdram != 0),
+    .i_sr3_we(sr3_we), .i_sr3_addr(sr3_addr),
+    .i_sr3_wdata(sr3_wdata), .i_sr3_be(sr3_be),
+    .o_sr3_rdata(ctl_sr3_rdata), .o_sr3_ack(ctl_sr3_ack),
+    .i_dl_wr(1'b0), .i_dl_addr('0), .i_dl_data('0), .o_dl_busy(), .i_dl_active(1'b0),
     .SDRAM_A(sdr_a), .SDRAM_BA(sdr_ba), .SDRAM_DQ(sdr_dq),
     .SDRAM_DQML(sdr_dqml), .SDRAM_DQMH(sdr_dqmh),
     .SDRAM_nCS(sdr_ncs), .SDRAM_nRAS(sdr_nras), .SDRAM_nCAS(sdr_ncas),
-    .SDRAM_nWE(sdr_nwe), .SDRAM_CKE(sdr_cke)
+    .SDRAM_nWE(sdr_nwe), .SDRAM_CKE(sdr_cke),
+    /* verilator lint_off PINCONNECTEMPTY */
+    .dbg_dl_saw(), .dbg_dl_byte0(), .dbg_dl_byte1(), .dbg_dl_count(),
+    .dbg_selftest(), .dbg_postdl(),
+    .dbg_dl_written(), .dbg_dl_dropped(), .dbg_fsm_info()
+    /* verilator lint_on PINCONNECTEMPTY */
   );
 
   sdram_model u_sdr_model (
     .clk(clk), .A(sdr_a), .BA(sdr_ba), .DQ(sdr_dq),
-    .DQML(sdr_dqml), .DQMH(sdr_dqmh),
+    // tied LOW like the real MiSTer SDRAM board (no byte masking exists)
+    .DQML(1'b0), .DQMH(1'b0),
     .nCS(sdr_ncs), .nRAS(sdr_nras), .nCAS(sdr_ncas), .nWE(sdr_nwe),
     .CKE(sdr_cke)
   );
@@ -245,6 +295,7 @@ module tb_system;
   longint      oki_nz;
   int          oki_first;
   initial oki_first = -1;
+  int         rb_cyc, rb_max;
   int         st_flagA, st_flagB, st_busy;
   logic [7:0] st_last[16];         // last 16 status values returned
   int         st_lidx;
@@ -305,6 +356,12 @@ module tb_system;
     if (dut.s_iack && dut.s_a[3:1] == 3'd1) s_iack1_cnt <= s_iack1_cnt + 1;
     if (dut.s_iack && dut.s_a[3:1] == 3'd2) s_iack2_cnt <= s_iack2_cnt + 1;
     if (!dut.ym_irq_n) ymirq_seen <= ymirq_seen + 1;
+    // renderer line-budget probe
+    if (dut.u_vdp.rnd_busy) rb_cyc <= rb_cyc + 1;
+    else begin
+      if (rb_cyc > rb_max) rb_max <= rb_cyc;
+      rb_cyc <= 0;
+    end
   end
 
   // audio capture: +AUDIODUMP=<path> writes raw s16le mono at sys/2048
@@ -363,12 +420,12 @@ module tb_system;
 
   task automatic dump_state(input string outdir, input int n);
     int fh;
-    $writememh($sformatf("%s/st%0d_vram0.hex", outdir, n), dut.u_vdp.vram0);
-    $writememh($sformatf("%s/st%0d_vram1.hex", outdir, n), dut.u_vdp.vram1);
-    $writememh($sformatf("%s/st%0d_vram2.hex", outdir, n), dut.u_vdp.vram2);
-    $writememh($sformatf("%s/st%0d_tiletable.hex", outdir, n), dut.u_vdp.tiletable);
-    $writememh($sformatf("%s/st%0d_palette.hex", outdir, n), dut.u_vdp.palette);
-    $writememh($sformatf("%s/st%0d_spriteram.hex", outdir, n), dut.u_vdp.spr_buf);
+    $writememh($sformatf("%s/st%0d_vram0.hex", outdir, n), dut.u_vdp.u_vram0.mem);
+    $writememh($sformatf("%s/st%0d_vram1.hex", outdir, n), dut.u_vdp.u_vram1.mem);
+    $writememh($sformatf("%s/st%0d_vram2.hex", outdir, n), dut.u_vdp.u_vram2.mem);
+    $writememh($sformatf("%s/st%0d_tiletable.hex", outdir, n), dut.u_vdp.u_tiletable.mem);
+    $writememh($sformatf("%s/st%0d_palette.hex", outdir, n), dut.u_vdp.u_palette.mem);
+    $writememh($sformatf("%s/st%0d_spriteram.hex", outdir, n), dut.u_vdp.u_spr_buf.mem);
     fh = $fopen($sformatf("%s/st%0d_regs.txt", outdir, n), "w");
     $fdisplay(fh, "sprite_count=0x%x", dut.u_vdp.r_spr_count);
     $fdisplay(fh, "sprite_priority=0x%x", dut.u_vdp.r_spr_pri);
@@ -472,6 +529,7 @@ module tb_system;
              okiw_n, okir_n, oki_nz, oki_first);
     if (use_sdram != 0)
       $display("oki sdram: data_mismatches=%0d max_ok_latency=%0d", oki_mism, oki_maxlat);
+    $display("render: worst_line_cycles=%0d", rb_max);
     for (int i = 0; i < okiw_n; i++)
       $display("  OKIW f=%0d val=%02x", okiw_log[i][23:8], okiw_log[i][7:0]);
     for (int i = 0; i < okir_n; i++)

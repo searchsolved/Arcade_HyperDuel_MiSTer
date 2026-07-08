@@ -41,6 +41,15 @@ module hyprduel_sys #(
     input  logic [7:0]  i_oki_data,
     input  logic        i_oki_ok,
 
+    // shared3 SDRAM port (word R/W)
+    output logic        o_sr3_req,
+    output logic        o_sr3_we,
+    output logic [16:0] o_sr3_addr,
+    output logic [15:0] o_sr3_wdata,
+    output logic [1:0]  o_sr3_be,
+    input  logic [15:0] i_sr3_rdata,
+    input  logic        i_sr3_ack,
+
     // GFX ROM stream port
     output logic              o_rom_req,
     output logic [GFX_AW-1:0] o_rom_addr,
@@ -51,21 +60,22 @@ module hyprduel_sys #(
 
     // debug
     output logic [7:0] dbg_subctl,
-    output logic       dbg_sub_in_reset
+    output logic       dbg_sub_in_reset,
+    output logic       dbg_vdp_write,
+    output logic       dbg_line_start,
+    output logic       dbg_rnd_done,
+    output logic       dbg_lb_nonzero,
+    output logic       dbg_cpu_past_vectors,
+    output logic       dbg_vdp_cs_seen,
+    output logic [15:0] dbg_mrom_word0,
+    output logic [15:0] dbg_mrom_word1,
+    output logic [15:0] dbg_mrom_word2,
+    output logic [15:0] dbg_mrom_word3
 );
 
   // ------------------------------------------------------------------
-  // memories
+  // memories (shared RAM declarations moved to hd_tdpram instances below)
   // ------------------------------------------------------------------
-  // True dual-port shared RAMs: port A = main CPU, port B = sub CPU.
-  // Reads and writes for both ports live in ONE always block per memory
-  // (Intel single-clock TDP template) so Quartus infers M10K; writes use
-  // byte-enable part-selects, reads land in continuously-updated q regs
-  // that the bus FSMs consume one state later (addresses are stable from
-  // the strobe cycle, so the q value matches the old direct read).
-  logic [15:0] shared1 [0:16383];     // 32 KB (sub vectors live here)
-  logic [15:0] shared2 [0:8191];      // 16 KB
-  logic [15:0] shared3 [0:57343];     // 112 KB
 
 
   // ------------------------------------------------------------------
@@ -132,6 +142,9 @@ module hyprduel_sys #(
   // ------------------------------------------------------------------
   logic        vdp_cs;
   logic [18:0] vdp_addr;
+  logic        vdp_rnw_r;
+  logic [1:0]  vdp_be_r;
+  logic [15:0] vdp_wdata_r;
   logic [15:0] vdp_rdata;
   logic        vdp_ack;
   logic        vdp_irq, vbl_pulse;
@@ -141,8 +154,8 @@ module hyprduel_sys #(
               .P_IRQ_LINE_MASK(8'h02)) u_vdp (
     // 2500 us at the sys clock implied by P_PIXDIV vs the 6.667 MHz pixel
     .clk(clk), .rst_n(rst_n),
-    .i_cs(vdp_cs), .i_addr(vdp_addr), .i_rnw(m_rw),
-    .i_be({~m_udsn, ~m_ldsn}), .i_wdata(m_dout),
+    .i_cs(vdp_cs), .i_addr(vdp_addr), .i_rnw(vdp_rnw_r),
+    .i_be(vdp_be_r), .i_wdata(vdp_wdata_r),
     .o_rdata(vdp_rdata), .o_ack(vdp_ack),
     .o_hs(o_hs), .o_vs(o_vs), .o_de(o_de), .o_ce_pix(o_ce_pix),
     .o_hblank(o_hblank), .o_vblank(o_vblank),
@@ -150,7 +163,11 @@ module hyprduel_sys #(
     .o_irq(vdp_irq), .o_vbl_pulse(vbl_pulse),
     .o_rom_req(o_rom_req), .o_rom_addr(o_rom_addr), .o_rom_len(o_rom_len),
     .i_rom_data(i_rom_data), .i_rom_valid(i_rom_valid),
-    .i_gfx_size(i_gfx_size)
+    .i_gfx_size(i_gfx_size),
+    .o_dbg_vdp_write(dbg_vdp_write),
+    .o_dbg_line_start(dbg_line_start),
+    .o_dbg_rnd_done(dbg_rnd_done),
+    .o_dbg_lb_nonzero(dbg_lb_nonzero)
   );
 
 
@@ -228,6 +245,35 @@ module hyprduel_sys #(
   logic sub_cmd_pend;   // sub IPL2 held until acked
   assign dbg_sub_in_reset = sub_rst;
 
+  // DEBUG: capture first 4 mrom reads (reset vector) and CPU address range
+  logic [2:0] mrom_cap_cnt;
+  always_ff @(posedge clk) begin
+    if (!rst_n) begin
+      mrom_cap_cnt <= 3'd0;
+      dbg_mrom_word0 <= '0;
+      dbg_mrom_word1 <= '0;
+      dbg_mrom_word2 <= '0;
+      dbg_mrom_word3 <= '0;
+      dbg_cpu_past_vectors <= 1'b0;
+      dbg_vdp_cs_seen <= 1'b0;
+    end else begin
+      if (i_mrom_valid && mrom_cap_cnt < 3'd4) begin
+        case (mrom_cap_cnt)
+          3'd0: dbg_mrom_word0 <= i_mrom_data;
+          3'd1: dbg_mrom_word1 <= i_mrom_data;
+          3'd2: dbg_mrom_word2 <= i_mrom_data;
+          3'd3: dbg_mrom_word3 <= i_mrom_data;
+          default: ;
+        endcase
+        mrom_cap_cnt <= mrom_cap_cnt + 3'd1;
+      end
+      if (m_strobe && m_ba >= 24'h000800)
+        dbg_cpu_past_vectors <= 1'b1;
+      if (vdp_cs)
+        dbg_vdp_cs_seen <= 1'b1;
+    end
+  end
+
   // ------------------------------------------------------------------
   // interrupts
   // ------------------------------------------------------------------
@@ -267,10 +313,22 @@ module hyprduel_sys #(
   wire m_strobe = !m_asn && !(m_udsn && m_ldsn);
   wire [15:0] m_wmask = {{8{~m_udsn}}, {8{~m_ldsn}}};
 
-  assign vdp_cs   = m_strobe && m_sel_vdp;
-  assign vdp_addr = m_ba[18:0];
+  always_ff @(posedge clk)
+    if (!rst_n) begin
+      vdp_cs      <= 1'b0;
+      vdp_addr    <= '0;
+      vdp_rnw_r   <= 1'b1;
+      vdp_be_r    <= 2'b00;
+      vdp_wdata_r <= '0;
+    end else begin
+      vdp_cs      <= m_strobe && m_sel_vdp;
+      vdp_addr    <= m_ba[18:0];
+      vdp_rnw_r   <= m_rw;
+      vdp_be_r    <= {~m_udsn, ~m_ldsn};
+      vdp_wdata_r <= m_dout;
+    end
 
-  typedef enum logic [1:0] {MB_IDLE, MB_WAIT, MB_ROM, MB_ACK} mb_e;
+  typedef enum logic [2:0] {MB_IDLE, MB_WAIT, MB_ROM, MB_SR3, MB_ACK} mb_e;
   mb_e mbst;
   logic [15:0] m_rdata_q;
   logic        m_wr_done;
@@ -280,6 +338,7 @@ module hyprduel_sys #(
       mbst <= MB_IDLE;
       m_wr_done <= 1'b0;
       o_mrom_rd <= 1'b0;
+      sr3_m_req <= 1'b0;
       sub_rst <= 1'b1;         // sub held in reset at power-on
       sub_cmd_pend <= 1'b0;
       dbg_subctl <= 8'h00;
@@ -290,16 +349,20 @@ module hyprduel_sys #(
       case (mbst)
         MB_IDLE: begin
           m_wr_done <= 1'b0;
+          sr3_m_req <= 1'b0;
           if (m_strobe && !m_sel_vdp && !m_iack) begin
             if (m_rw) begin
               if (m_sel_rom) begin
                 o_mrom_rd   <= 1'b1;
                 o_mrom_addr <= m_ba[18:1];
                 mbst <= MB_ROM;
+              end else if (m_sel_sr3) begin
+                sr3_m_req <= 1'b1;
+                mbst <= MB_SR3;
               end else
                 mbst <= MB_WAIT;   // registered reads settle next cycle
             end else begin
-              // shared RAM writes commit in the TDP blocks below
+              // shared RAM writes (sr1/sr2 commit in TDP blocks below)
               if (m_sel_ctl && !m_ldsn) begin
                 dbg_subctl <= m_dout[7:0];
                 case (m_dout[7:0])
@@ -309,7 +372,11 @@ module hyprduel_sys #(
                   default: ;
                 endcase
               end
-              mbst <= MB_ACK;
+              if (m_sel_sr3) begin
+                sr3_m_req <= 1'b1;
+                mbst <= MB_SR3;        // sr3 writes go through SDRAM
+              end else
+                mbst <= MB_ACK;
             end
           end
         end
@@ -320,10 +387,17 @@ module hyprduel_sys #(
             mbst <= MB_ACK;
           end
         end
+        MB_SR3: begin
+          sr3_m_req <= 1'b1;
+          if (sr3_m_ack) begin
+            sr3_m_req <= 1'b0;
+            if (m_rw) m_rdata_q <= i_sr3_rdata;
+            mbst <= MB_ACK;
+          end
+        end
         MB_WAIT: begin
           if (m_sel_sr1) m_rdata_q <= sr1_q_a;
           else if (m_sel_sr2) m_rdata_q <= sr2_q_a;
-          else if (m_sel_sr3) m_rdata_q <= sr3_q_a;
           else if (m_sel_io) begin
             case (m_ba[2:1])
               2'd0: m_rdata_q <= i_service;
@@ -360,37 +434,53 @@ module hyprduel_sys #(
   wire s_strobe = !s_asn && !(s_udsn && s_ldsn);
   wire [15:0] s_wmask = {{8{~s_udsn}}, {8{~s_ldsn}}};
 
-  typedef enum logic [1:0] {SB_IDLE, SB_WAIT, SB_ACK} sb_e;
+  typedef enum logic [1:0] {SB_IDLE, SB_WAIT, SB_SR3, SB_ACK} sb_e;
   sb_e sbst;
   logic [15:0] s_rdata_q;
 
   always_ff @(posedge clk) begin
     if (!rst_n) begin
       sbst <= SB_IDLE;
+      sr3_s_req <= 1'b0;
     end else begin
       case (sbst)
         SB_IDLE: begin
+          sr3_s_req <= 1'b0;
           if (s_strobe && !s_iack) begin
             if (s_rw) begin
-              sbst <= SB_WAIT;
+              if (s_sel_ro3 || s_sel_sr3) begin
+                sr3_s_req <= 1'b1;
+                sbst <= SB_SR3;
+              end else
+                sbst <= SB_WAIT;
             end else begin
-              // shared RAM writes commit in the TDP blocks below
-              // (s_sel_ro3 writes ignored: read-only shadow)
+              // shared RAM writes: sr1/sr2 commit in TDP blocks below
+              // s_sel_ro3 writes ignored: read-only shadow
               // s_sel_snd writes ignored (sound stubs)
-              sbst <= SB_ACK;
+              if (s_sel_sr3) begin
+                sr3_s_req <= 1'b1;
+                sbst <= SB_SR3;        // sr3 writes go through SDRAM
+              end else
+                sbst <= SB_ACK;
             end
           end
         end
         SB_WAIT: begin
           if (s_sel_vec)      s_rdata_q <= sr1_q_b;
-          else if (s_sel_ro3) s_rdata_q <= sr3_q_b;
           else if (s_sel_sr1) s_rdata_q <= sr1_q_b;
           else if (s_sel_sr2) s_rdata_q <= sr2_q_b;
-          else if (s_sel_sr3) s_rdata_q <= sr3_q_b;
           else if (s_sel_ym)  s_rdata_q <= {8'h00, ym_dout};
           else if (s_sel_snd) s_rdata_q <= {8'h00, oki_dout};
           else                s_rdata_q <= 16'hFFFF;
           sbst <= SB_ACK;
+        end
+        SB_SR3: begin
+          sr3_s_req <= 1'b1;
+          if (sr3_s_ack) begin
+            sr3_s_req <= 1'b0;
+            if (s_rw) s_rdata_q <= i_sr3_rdata;
+            sbst <= SB_ACK;
+          end
         end
         SB_ACK: begin
           if (s_asn) sbst <= SB_IDLE;
@@ -415,12 +505,12 @@ module hyprduel_sys #(
 
   // ------------------------------------------------------------------
   // shared RAM TDP ports (port A = main, port B = sub)
+  // shared1/shared2 stay in BRAM; shared3 moved to SDRAM
   // ------------------------------------------------------------------
   logic [13:0] sr1_addr_a, sr1_addr_b;
   logic [12:0] sr2_addr_a, sr2_addr_b;
-  logic [16:0] sr3_addr_a, sr3_addr_b;
-  logic        sr1_we_a, sr1_we_b, sr2_we_a, sr2_we_b, sr3_we_a, sr3_we_b;
-  logic [15:0] sr1_q_a, sr1_q_b, sr2_q_a, sr2_q_b, sr3_q_a, sr3_q_b;
+  logic        sr1_we_a, sr1_we_b, sr2_we_a, sr2_we_b;
+  logic [15:0] sr1_q_a, sr1_q_b, sr2_q_a, sr2_q_b;
 
   wire m_wr_commit = (mbst == MB_IDLE) && m_strobe && !m_sel_vdp
                      && !m_iack && !m_rw;
@@ -428,57 +518,60 @@ module hyprduel_sys #(
 
   assign sr1_addr_a = m_ba[14:1];
   assign sr2_addr_a = m_ba[13:1];
-  assign sr3_addr_a = m_ba[17:1] - 17'h2000;
   assign sr1_we_a = m_wr_commit && m_sel_sr1;
   assign sr2_we_a = m_wr_commit && m_sel_sr2;
-  assign sr3_we_a = m_wr_commit && m_sel_sr3;
 
   assign sr1_addr_b = s_sel_vec ? {2'b00, s_ba[13:1]} : s_ba[14:1];
   assign sr2_addr_b = s_ba[13:1];
-  assign sr3_addr_b = s_sel_ro3 ? {4'b0000, s_ba[13:1]}
-                                : (s_ba[17:1] - 17'h2000);
   assign sr1_we_b = s_wr_commit && (s_sel_vec || s_sel_sr1);
   assign sr2_we_b = s_wr_commit && s_sel_sr2;
-  assign sr3_we_b = s_wr_commit && s_sel_sr3;
 
+
+  hd_tdpram #(.AW(14), .DW(16)) u_shared1 (
+    .clk(clk),
+    .addr_a(sr1_addr_a), .d_a(m_dout), .we_a(sr1_we_a),
+    .be_a({~m_udsn, ~m_ldsn}), .q_a(sr1_q_a),
+    .addr_b(sr1_addr_b), .d_b(s_dout), .we_b(sr1_we_b),
+    .be_b({~s_udsn, ~s_ldsn}), .q_b(sr1_q_b)
+  );
+
+  hd_tdpram #(.AW(13), .DW(16)) u_shared2 (
+    .clk(clk),
+    .addr_a(sr2_addr_a), .d_a(m_dout), .we_a(sr2_we_a),
+    .be_a({~m_udsn, ~m_ldsn}), .q_a(sr2_q_a),
+    .addr_b(sr2_addr_b), .d_b(s_dout), .we_b(sr2_we_b),
+    .be_b({~s_udsn, ~s_ldsn}), .q_b(sr2_q_b)
+  );
+
+  // ------------------------------------------------------------------
+  // shared3 SDRAM arbiter (two CPUs, one SDRAM port)
+  // main CPU wins ties; loser stays in its SR3 wait state
+  // ------------------------------------------------------------------
+  logic sr3_m_req, sr3_s_req;      // level-held by each FSM while in MB_SR3/SB_SR3
+  logic sr3_grant_s;               // 0 = main granted (or idle), 1 = sub granted
+
+  // address computation (reuses the original mapping)
+  wire [16:0] sr3_m_addr = m_ba[17:1] - 17'h2000;
+  wire [16:0] sr3_s_addr = s_sel_ro3 ? {4'b0000, s_ba[13:1]}
+                                     : (s_ba[17:1] - 17'h2000);
 
   always_ff @(posedge clk) begin
-    if (sr1_we_a) begin
-      if (!m_udsn) shared1[sr1_addr_a][15:8] <= m_dout[15:8];
-      if (!m_ldsn) shared1[sr1_addr_a][7:0]  <= m_dout[7:0];
+    if (!rst_n) sr3_grant_s <= 1'b0;
+    else if (i_sr3_ack) sr3_grant_s <= 1'b0;  // release on ack
+    else if (!o_sr3_req) begin  // idle: pick next
+      if (sr3_m_req) sr3_grant_s <= 1'b0;
+      else if (sr3_s_req) sr3_grant_s <= 1'b1;
     end
-    sr1_q_a <= shared1[sr1_addr_a];
-    if (sr1_we_b) begin
-      if (!s_udsn) shared1[sr1_addr_b][15:8] <= s_dout[15:8];
-      if (!s_ldsn) shared1[sr1_addr_b][7:0]  <= s_dout[7:0];
-    end
-    sr1_q_b <= shared1[sr1_addr_b];
   end
 
-  always_ff @(posedge clk) begin
-    if (sr2_we_a) begin
-      if (!m_udsn) shared2[sr2_addr_a][15:8] <= m_dout[15:8];
-      if (!m_ldsn) shared2[sr2_addr_a][7:0]  <= m_dout[7:0];
-    end
-    sr2_q_a <= shared2[sr2_addr_a];
-    if (sr2_we_b) begin
-      if (!s_udsn) shared2[sr2_addr_b][15:8] <= s_dout[15:8];
-      if (!s_ldsn) shared2[sr2_addr_b][7:0]  <= s_dout[7:0];
-    end
-    sr2_q_b <= shared2[sr2_addr_b];
-  end
+  wire sr3_m_ack = i_sr3_ack && !sr3_grant_s;
+  wire sr3_s_ack = i_sr3_ack && sr3_grant_s;
 
-  always_ff @(posedge clk) begin
-    if (sr3_we_a) begin
-      if (!m_udsn) shared3[sr3_addr_a][15:8] <= m_dout[15:8];
-      if (!m_ldsn) shared3[sr3_addr_a][7:0]  <= m_dout[7:0];
-    end
-    sr3_q_a <= shared3[sr3_addr_a];
-    if (sr3_we_b) begin
-      if (!s_udsn) shared3[sr3_addr_b][15:8] <= s_dout[15:8];
-      if (!s_ldsn) shared3[sr3_addr_b][7:0]  <= s_dout[7:0];
-    end
-    sr3_q_b <= shared3[sr3_addr_b];
-  end
+  assign o_sr3_req = sr3_m_req || sr3_s_req;
+
+  assign o_sr3_addr  = sr3_grant_s ? sr3_s_addr  : sr3_m_addr;
+  assign o_sr3_wdata = sr3_grant_s ? s_dout      : m_dout;
+  assign o_sr3_be    = sr3_grant_s ? {~s_udsn, ~s_ldsn} : {~m_udsn, ~m_ldsn};
+  assign o_sr3_we    = sr3_grant_s ? (s_strobe && !s_rw) : (m_strobe && !m_rw);
 
 endmodule

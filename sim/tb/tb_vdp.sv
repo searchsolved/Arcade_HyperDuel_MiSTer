@@ -63,7 +63,11 @@ module tb_vdp;
     .o_irq(irq), .o_vbl_pulse(vbl),
     .o_rom_req(rom_req), .o_rom_addr(rom_addr), .o_rom_len(rom_len),
     .i_rom_data(rom_data), .i_rom_valid(rom_valid),
-    .i_gfx_size(24'(gfx_size))
+    .i_gfx_size(24'(gfx_size)),
+    /* verilator lint_off PINCONNECTEMPTY */
+    .o_dbg_vdp_write(), .o_dbg_line_start(),
+    .o_dbg_rnd_done(), .o_dbg_lb_nonzero()
+    /* verilator lint_on PINCONNECTEMPTY */
   );
 
   // ROM stream server (pulse req -> latency -> len bytes with a gap)

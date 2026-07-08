@@ -48,7 +48,8 @@
              default="A,B,X,Start,Select,L"/>
 
     <rom index="0" zip="hyprduel.zip" type="merged">
-        <!-- main 68000 program: byte interleave -->
+        <!-- main 68000 program: byte interleave (even addr = high byte)
+             map="01" = output position 0 (high byte); 24.u24 is the even/high ROM -->
         <interleave output="16">
             <part name="24.u24" crc="c7402722" map="01"/>
             <part name="23.u23" crc="d8297c2b" map="10"/>

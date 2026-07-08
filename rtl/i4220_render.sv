@@ -16,9 +16,8 @@
 // i_rom_valid pulses (not necessarily consecutive). No new request before
 // the previous stream completes.
 //
-// TODO(M4): line accumulators are flop arrays (320 deep); convert to BRAM
-// ping-pong. Layer passes could run from their per-layer VRAM ports in
-// parallel if the line budget tightens.
+// Line accumulators are packed into two SDP BRAMs (lay_mem 15-bit,
+// spr_mem 20-bit) with one-ahead prefetch addressing.
 
 module i4220_render #(
     parameter int GFX_AW = 22
@@ -97,23 +96,38 @@ module i4220_render #(
     ztab[60]=12'h058; ztab[61]=12'h050; ztab[62]=12'h048; ztab[63]=12'h040;
   end
 
-  // line accumulators (TODO(M4): BRAM ping-pong)
-  logic        lay_valid [0:WIDTH-1];
-  logic [1:0]  lay_pri   [0:WIDTH-1];
-  logic [11:0] lay_pen   [0:WIDTH-1];
-  logic        spr_taken [0:WIDTH-1];
-  logic [4:0]  spr_group [0:WIDTH-1];
-  logic [1:0]  spr_prival[0:WIDTH-1];
-  logic [11:0] spr_pen   [0:WIDTH-1];
+  // line accumulators: packed into two SDP BRAMs
+  // lay_mem: {valid, pri[1:0], pen[11:0]}
+  logic [14:0] lay_mem [0:511];
+  // spr_mem: {taken, group[4:0], prival[1:0], pen[11:0]}
+  logic [19:0] spr_mem [0:511];
+
+  logic [14:0] lay_q;      logic [19:0] spr_q;
+  logic        lay_we;     logic        spr_we;
+  logic [8:0]  lay_waddr;  logic [8:0]  spr_waddr;
+  logic [14:0] lay_wdata;  logic [19:0] spr_wdata;
+  logic [8:0]  lay_raddr;  logic [8:0]  spr_raddr;
+
+  always_ff @(posedge clk) begin
+    lay_q <= lay_mem[lay_raddr];
+    spr_q <= spr_mem[spr_raddr];
+  end
+
+  always_ff @(posedge clk) begin
+    if (lay_we) lay_mem[lay_waddr] <= lay_wdata;
+    if (spr_we) spr_mem[spr_waddr] <= spr_wdata;
+  end
 
   typedef enum logic [4:0] {
     ST_IDLE,
     ST_CLR,
-    ST_L_PIX, ST_L_VR1, ST_L_VR2,
+    ST_L_PIX, ST_L_VR0, ST_L_VR1, ST_L_VR2, ST_L_VR3,
     ST_L_TT1, ST_L_TT2, ST_L_TT3,
     ST_L_GRCV,
     ST_S_RD0, ST_S_RD1, ST_S_RD2, ST_S_RD3, ST_S_RD4,
-    ST_S_ZOOM, ST_S_COVER, ST_S_DIV, ST_S_GREQ, ST_S_GRCV, ST_S_EMIT,
+    ST_S_ZOOM, ST_S_COVER, ST_S_DIV, ST_S_GREQ, ST_S_GMUL, ST_S_GISS, ST_S_GRCV,
+    ST_S_PRIME, ST_S_PRIM2, ST_S_EMIT,
+    ST_L_TT3B,
     ST_RESOLVE
   } st_e;
 
@@ -125,6 +139,7 @@ module i4220_render #(
   logic [1:0]  layer;
 
   // tile fetch context
+  logic [15:0] vdata_r;            // registered layer-muxed VRAM word
   logic [15:0] code_r;
   logic [15:0] cache_code;
   logic        cache_valid;
@@ -138,6 +153,9 @@ module i4220_render #(
   logic [4:0]  rx;
   logic [15:0] tt0_r;
   logic [16:0] prev_tileoffs;    // [16] = invalid marker
+  logic [22:0] tt_tile2_q;       // TT3 -> TT3B pipeline
+  logic [4:0]  tt_rowbytes_q;
+  logic [4:0]  tt_rowsel_q;
 
   // sprite pass context
   logic [9:0]  scount;
@@ -150,6 +168,11 @@ module i4220_render #(
   int          sx0, sy0;         // signed screen start
   int          xo, xo_end;       // output-offset walk bounds
   logic [23:0] dx_q, dy_q;
+  logic [11:0] rowsel_q;           // pipelined row selection for ROM addr
+  logic [35:0] yidx_q;             // pipelined zoom-scaled row index
+  logic [11:0] s_xs;               // pixel-index multiplier input (v or W-1-v)
+  logic [35:0] s_xi;               // running product xs*dx; steps by +-dx per pixel
+  wire  [11:0] s_pixidx = s_xi[27:16];   // current sprite pixel index
   logic        s_bpp8;
   logic [1:0]  s_prival;
   logic [4:0]  s_group;
@@ -229,20 +252,34 @@ module i4220_render #(
     tile_pen = 12'(tile_texel) | cache_color;
   end
 
-  // sprite source pixel index for current output offset (combinational)
-  logic [11:0] s_xsel;
-  always_comb begin
-    int xsel;
-    xsel = sattr[15] ? (int'(out_w) - 1 - xo) : xo;     // flip X
-    s_xsel = 12'(xsel);
-  end
-  wire [35:0] s_xidx   = 36'(s_xsel) * 36'(dx_q);
-  wire [11:0] s_pixidx = s_xidx[27:16];
+  // Sprite pixel index: pixidx(v) = ((flipX ? out_w-1-v : v) * dx) >> 16.
+  // Computed once per sprite with a registered-input multiply (PRIME/PRIM2),
+  // then advanced by +-dx per emitted pixel (exact by linearity of the
+  // product in v) so the emit loop carries only a 36-bit add.
 
   // divider next-step values (combinational)
   wire [23:0] div_rem_sh = {div_rem[22:0], div_num[23]};
   wire        div_ge     = (div_rem_sh >= 24'(div_den));
   wire [23:0] div_q_next = {div_quot[22:0], div_ge};
+
+  // ------------------------------------------------------------------
+  // prefetch addresses for BRAM accumulators
+  // ------------------------------------------------------------------
+  wire       xadv   = ((st == ST_L_PIX) && (prev_tileoffs == {1'b0, tileoffs}))
+                   || (st == ST_CLR) || (st == ST_RESOLVE);
+  wire [8:0] xnext  = (xcur == 9'(WIDTH-1)) ? 9'd0 : (xcur + 9'd1);
+  wire [8:0] xtrack = xadv ? xnext : xcur;
+
+  always_comb begin
+    lay_raddr = xtrack;
+    spr_raddr = (st == ST_S_EMIT) ? 9'(sx0 + xo + 1)
+              : (st == ST_S_PRIME || st == ST_S_PRIM2) ? 9'(sx0 + xo)
+              : (st == ST_S_RD1 || st == ST_S_RD2 || st == ST_S_RD3 ||
+                 st == ST_S_RD4 || st == ST_S_ZOOM || st == ST_S_COVER ||
+                 st == ST_S_DIV || st == ST_S_GREQ || st == ST_S_GRCV)
+                ? ((sx0 < 0) ? 9'd0 : 9'(sx0))
+              : xtrack;
+  end
 
   // ------------------------------------------------------------------
   // main FSM
@@ -259,6 +296,8 @@ module i4220_render #(
       o_done <= 1'b0;
       o_lb_we <= 1'b0;
       o_rom_req <= 1'b0;
+      lay_we <= 1'b0;
+      spr_we <= 1'b0;
 
       unique case (st)
         ST_IDLE: begin
@@ -276,8 +315,8 @@ module i4220_render #(
         end
 
         ST_CLR: begin
-          lay_valid[xcur] <= 1'b0;
-          spr_taken[xcur] <= 1'b0;
+          lay_we <= 1'b1;  lay_waddr <= xcur;  lay_wdata <= '0;
+          spr_we <= 1'b1;  spr_waddr <= xcur;  spr_wdata <= '0;
           if (xcur == 9'(WIDTH - 1)) begin
             xcur  <= 9'd0;
             did_init <= 1'b1;
@@ -291,7 +330,7 @@ module i4220_render #(
           if (prev_tileoffs != {1'b0, tileoffs}) begin
             o_vram_addr   <= tileoffs;
             prev_tileoffs <= {1'b0, tileoffs};
-            st <= ST_L_VR1;
+            st <= ST_L_VR0;
           end else begin
             logic do_write;
             logic [11:0] wpen;
@@ -307,11 +346,11 @@ module i4220_render #(
               end
             end
             if (do_write &&
-                (!lay_valid[xcur] ||
-                 layer_pri_of(layer) <= lay_pri[xcur])) begin
-              lay_valid[xcur] <= 1'b1;
-              lay_pri[xcur]   <= layer_pri_of(layer);
-              lay_pen[xcur]   <= wpen;
+                (!lay_q[14] ||
+                 layer_pri_of(layer) <= lay_q[13:12])) begin
+              lay_we    <= 1'b1;
+              lay_waddr <= xcur;
+              lay_wdata <= {1'b1, layer_pri_of(layer), wpen};
             end
             if (xcur == 9'(WIDTH - 1)) begin
               xcur <= 9'd0;
@@ -328,24 +367,33 @@ module i4220_render #(
           end
         end
 
+        ST_L_VR0: st <= ST_L_VR1;   // absorb VDP-side addr pipeline register
         ST_L_VR1: st <= ST_L_VR2;
 
         ST_L_VR2: begin
-          code_r <= i_vram_data[layer];
-          if (cache_valid && i_vram_data[layer] == cache_code) begin
+          // register the layer-muxed VRAM word; the compare/branch runs on
+          // the registered copy next cycle (breaks the layer -> mux ->
+          // compare -> decode timing path)
+          vdata_r <= i_vram_data[layer];
+          st <= ST_L_VR3;
+        end
+
+        ST_L_VR3: begin
+          code_r <= vdata_r;
+          if (cache_valid && vdata_r == cache_code) begin
             st <= ST_L_PIX;                            // same code: cache hit
           end else begin
-            cache_code  <= i_vram_data[layer];
+            cache_code  <= vdata_r;
             cache_valid <= 1'b1;
-            if (i_vram_data[layer][15]) begin          // solid color tile
+            if (vdata_r[15]) begin                     // solid color tile
               cache_solid <= 1'b1;
               cache_oor   <= 1'b0;
-              cache_opaque_solid <= (i_vram_data[layer][3:0] != 4'hF);
-              cache_solid_pen    <= i_vram_data[layer][11:0];
+              cache_opaque_solid <= (vdata_r[3:0] != 4'hF);
+              cache_solid_pen    <= vdata_r[11:0];
               st <= ST_L_PIX;
             end else begin
               cache_solid <= 1'b0;
-              o_tt_addr <= {i_vram_data[layer][12:4], 1'b0};
+              o_tt_addr <= {vdata_r[12:4], 1'b0};
               st <= ST_L_TT1;
             end
           end
@@ -362,31 +410,36 @@ module i4220_render #(
         end
 
         ST_L_TT3: begin
+          // stage 1: decode tile word, register the row-address operands;
+          // the multiply-add and ROM issue run on registered values in TT3B
           logic [31:0] tile;
           logic [7:0]  colorbyte;
           logic        bpp8;
           logic [22:0] tile2;
           logic [1:0]  tshift;
-          logic [4:0]  rowsel;
-          logic [4:0]  rowbytes;
-          logic [27:0] rowbase;
           tile = {tt0_r, i_tt_data};
           colorbyte = tile[27:20];
           bpp8 = (colorbyte[3:0] == 4'hF);
           tshift = big ? (bpp8 ? 2'd3 : 2'd2) : (bpp8 ? 2'd1 : 2'd0);
           tile2 = 23'((tile & 32'h000F_FFFF) + (32'(code_r[3:0]) << tshift));
-          rowbytes = big ? (bpp8 ? 5'd16 : 5'd8) : (bpp8 ? 5'd8 : 5'd4);
           cache_bpp8 <= bpp8;
           cache_color <= bpp8 ? {colorbyte[7:4], 8'h00} : {colorbyte, 4'h0};
-          if (32'(tile2) >= (32'(i_gfx_size) >> 5)) begin
+          tt_tile2_q   <= tile2;
+          tt_rowbytes_q <= big ? (bpp8 ? 5'd16 : 5'd8) : (bpp8 ? 5'd8 : 5'd4);
+          tt_rowsel_q  <= code_r[13] ? ((tsz - 5'd1) - pix_y) : pix_y; // flip Y
+          st <= ST_L_TT3B;
+        end
+
+        ST_L_TT3B: begin
+          logic [27:0] rowbase;
+          if (32'(tt_tile2_q) >= (32'(i_gfx_size) >> 5)) begin
             cache_oor <= 1'b1;
             st <= ST_L_PIX;
           end else begin
             cache_oor <= 1'b0;
-            rowsel = code_r[13] ? ((tsz - 5'd1) - pix_y) : pix_y;  // flip Y
-            rowbase = {tile2, 5'd0} + 28'(rowsel) * 28'(rowbytes);
+            rowbase = {tt_tile2_q, 5'd0} + 28'(tt_rowsel_q) * 28'(tt_rowbytes_q);
             o_rom_addr <= rowbase[GFX_AW-1:0];
-            o_rom_len  <= {2'd0, rowbytes};
+            o_rom_len  <= {2'd0, tt_rowbytes_q};
             o_rom_req  <= 1'b1;
             rx <= 5'd0;
             st <= ST_L_GRCV;
@@ -516,26 +569,33 @@ module i4220_render #(
         end
 
         ST_S_GREQ: begin
-          logic [11:0] rowoff, rowsel;
-          logic [35:0] yidx;
-          logic [25:0] rowb;
+          logic [11:0] rowoff;
           if (int'(line_r) < sy0 || int'(line_r) >= sy0 + int'(out_h) ||
               sx0 >= WIDTH || sx0 + int'(out_w) <= 0) begin
             scur <= scur + 10'd1;
             st <= ST_S_RD0;
           end else begin
             rowoff = 12'(int'(line_r) - sy0);
-            rowsel = sattr[14] ? (out_h - 12'd1 - rowoff) : rowoff;  // flip Y
-            yidx = 36'(rowsel) * 36'(dy_q);
-            rowb = sgfx + (s_bpp8
-                   ? 26'(yidx[27:16]) * 26'(sw_pix)
-                   : 26'(yidx[27:16]) * 26'(sw_pix >> 1));
-            o_rom_addr <= rowb[GFX_AW-1:0];
-            o_rom_len  <= s_bpp8 ? sw_pix : (sw_pix >> 1);
-            o_rom_req  <= 1'b1;
-            rx2 <= 6'd0;
-            st <= ST_S_GRCV;
+            rowsel_q <= sattr[14] ? (out_h - 12'd1 - rowoff) : rowoff;
+            st <= ST_S_GMUL;
           end
+        end
+
+        ST_S_GMUL: begin
+          yidx_q <= 36'(rowsel_q) * 36'(dy_q);
+          st <= ST_S_GISS;
+        end
+
+        ST_S_GISS: begin
+          logic [25:0] rowb;
+          rowb = sgfx + (s_bpp8
+                 ? 26'(yidx_q[27:16]) * 26'(sw_pix)
+                 : 26'(yidx_q[27:16]) * 26'(sw_pix >> 1));
+          o_rom_addr <= rowb[GFX_AW-1:0];
+          o_rom_len  <= s_bpp8 ? sw_pix : (sw_pix >> 1);
+          o_rom_req  <= 1'b1;
+          rx2 <= 6'd0;
+          st <= ST_S_GRCV;
         end
 
         ST_S_GRCV: begin
@@ -545,10 +605,22 @@ module i4220_render #(
               xo     <= (sx0 < 0) ? -sx0 : 0;
               xo_end <= (sx0 + int'(out_w) > WIDTH) ? (WIDTH - sx0)
                                                     : int'(out_w);
-              st <= ST_S_EMIT;
+              st <= ST_S_PRIME;
             end else
               rx2 <= rx2 + 6'd1;
           end
+        end
+
+        ST_S_PRIME: begin
+          // stage 1: resolve the flip-adjusted start index (subtract only)
+          s_xs <= 12'(sattr[15] ? (int'(out_w) - 1 - xo) : xo);
+          st <= ST_S_PRIM2;
+        end
+
+        ST_S_PRIM2: begin
+          // stage 2: one registered-input multiply seeds the accumulator
+          s_xi <= 36'(s_xs) * 36'(dx_q);
+          st <= ST_S_EMIT;
         end
 
         ST_S_EMIT: begin
@@ -564,15 +636,16 @@ module i4220_render #(
             xscr = 9'(sx0 + xo);
             if ((s_bpp8 && texel != 8'hFF) ||
                 (!s_bpp8 && texel[3:0] != 4'hF)) begin
-              if (!spr_taken[xscr] || s_group < spr_group[xscr]) begin
-                spr_taken[xscr]  <= 1'b1;
-                spr_group[xscr]  <= s_group;
-                spr_prival[xscr] <= s_prival;
-                spr_pen[xscr]    <= spr_palbase
+              if (!spr_q[19] || s_group < spr_q[18:14]) begin
+                spr_we    <= 1'b1;
+                spr_waddr <= xscr;
+                spr_wdata <= {1'b1, s_group, s_prival,
+                              spr_palbase
                     | (s_bpp8 ? 12'(texel)
-                              : ({4'd0, sattr[7:4], 4'd0} | 12'(texel)));
+                              : ({4'd0, sattr[7:4], 4'd0} | 12'(texel)))};
               end
             end
+            s_xi <= sattr[15] ? (s_xi - 36'(dx_q)) : (s_xi + 36'(dx_q));
             xo <= xo + 1;
           end
         end
@@ -583,20 +656,19 @@ module i4220_render #(
           logic [11:0] pen;
           if (blank) pen = i_bg_color;
           else begin
-            laycode = lay_valid[xcur] ? (2'd3 - lay_pri[xcur]) : 2'd0;
-            if (spr_taken[xcur] && laycode <= spr_prival[xcur])
-              pen = spr_pen[xcur];
-            else if (lay_valid[xcur])
-              pen = lay_pen[xcur];
+            laycode = lay_q[14] ? (2'd3 - lay_q[13:12]) : 2'd0;
+            if (spr_q[19] && laycode <= spr_q[13:12])
+              pen = spr_q[11:0];
+            else if (lay_q[14])
+              pen = lay_q[11:0];
             else
               pen = i_bg_color;
           end
           o_lb_we  <= 1'b1;
           o_lb_x   <= xcur;
           o_lb_pen <= pen;
-          // pre-clear accumulators for the next line
-          lay_valid[xcur] <= 1'b0;
-          spr_taken[xcur] <= 1'b0;
+          lay_we <= 1'b1;  lay_waddr <= xcur;  lay_wdata <= '0;
+          spr_we <= 1'b1;  spr_waddr <= xcur;  spr_wdata <= '0;
           if (xcur == 9'(WIDTH - 1)) begin
             o_done <= 1'b1;
             o_busy <= 1'b0;

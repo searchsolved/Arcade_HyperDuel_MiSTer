@@ -28,7 +28,10 @@ set_global_assignment -name TIMEQUEST_MULTICORNER_ANALYSIS OFF
 set_global_assignment -name OPTIMIZE_POWER_DURING_FITTING OFF
 set_global_assignment -name FINAL_PLACEMENT_OPTIMIZATION ALWAYS
 set_global_assignment -name FITTER_EFFORT "STANDARD FIT"
-set_global_assignment -name OPTIMIZATION_MODE "HIGH PERFORMANCE EFFORT"
+# Template default is "HIGH PERFORMANCE EFFORT"; that mode drove quartus_map
+# to 4h43m and a crash (compiles 6-8). BALANCED until the core is proven on
+# hardware, then raise effort knobs one at a time if timing needs it.
+set_global_assignment -name OPTIMIZATION_MODE BALANCED
 set_global_assignment -name ALLOW_POWER_UP_DONT_CARE ON
 set_global_assignment -name QII_AUTO_PACKED_REGISTERS NORMAL
 set_global_assignment -name ROUTER_LCELL_INSERTION_AND_LOGIC_DUPLICATION ON
@@ -42,6 +45,11 @@ set_global_assignment -name AUTO_DELAY_CHAINS_FOR_HIGH_FANOUT_INPUT_PINS ON
 set_global_assignment -name PHYSICAL_SYNTHESIS_COMBO_LOGIC_FOR_AREA ON
 set_global_assignment -name ADV_NETLIST_OPT_SYNTH_WYSIWYG_REMAP ON
 set_global_assignment -name SYNTH_GATED_CLOCK_CONVERSION ON
+# TDS OFF: quartus_map 17.0 crashed (access violation, 120GB VM) after 4-5h
+# inside timing-driven synthesis on this design, twice (compiles 6 and 7).
+# The fitter still does timing-driven placement; get an rbf + real slack
+# numbers first, then re-evaluate.
+set_global_assignment -name SYNTH_TIMING_DRIVEN_SYNTHESIS OFF
 set_global_assignment -name PRE_MAPPING_RESYNTHESIS ON
 set_global_assignment -name ROUTER_CLOCKING_TOPOLOGY_ANALYSIS ON
 set_global_assignment -name ECO_OPTIMIZE_TIMING ON

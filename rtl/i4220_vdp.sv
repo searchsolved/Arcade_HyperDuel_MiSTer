@@ -60,7 +60,13 @@ module i4220_vdp #(
     output logic [6:0]        o_rom_len,
     input  logic [7:0]        i_rom_data,
     input  logic              i_rom_valid,
-    input  logic [23:0]       i_gfx_size
+    input  logic [23:0]       i_gfx_size,
+
+    // DEBUG: diagnostic flags for hardware bring-up
+    output logic o_dbg_vdp_write,    // CPU ever wrote to VDP
+    output logic o_dbg_line_start,   // line_start ever fired
+    output logic o_dbg_rnd_done,     // renderer ever completed a line
+    output logic o_dbg_lb_nonzero    // linebuf ever had a nonzero pixel
 );
 
   localparam int H_VIS = 320, H_TOTAL = 424;
@@ -71,15 +77,103 @@ module i4220_vdp #(
   // ------------------------------------------------------------------
   // memories
   // ------------------------------------------------------------------
-  logic [15:0] vram0 [0:65535];
-  logic [15:0] vram1 [0:65535];
-  logic [15:0] vram2 [0:65535];
-  logic [15:0] tiletable [0:1023];
-  logic [15:0] palette [0:4095];
-  logic [15:0] spr_live [0:2047];
-  logic [15:0] spr_buf [0:2047];
-  logic [15:0] scratch [0:4095];
-  logic [11:0] linebuf [0:3][0:319];   // 4 banks: up to 3 lines of render lookahead
+  // VRAM: explicit dual-port RAM wrappers (Verilator = inferred array,
+  // Quartus = altsyncram) to avoid the 50GB elaboration balloon from
+  // Quartus 17 inferring three 64Kx16 memories through its front end.
+  // Port A = CPU/blitter (read/write), Port B = renderer (read-only).
+  logic [15:0] vr_a_addr, vr_a_d;
+  logic        vr_a_we [3];
+  logic [1:0]  vr_a_be;
+  logic [15:0] q_vram0, q_vram1, q_vram2;
+
+  // Pipeline register on the VRAM port-B address: breaks the long
+  // combinational path from the renderer's tileoffs computation into
+  // the BRAM address register (the worst timing path at -2.195 ns).
+  // The renderer's VR wait states are extended by one cycle to match.
+  logic [15:0] rnd_vram_addr_r;
+  always_ff @(posedge clk) rnd_vram_addr_r <= rnd_vram_addr;
+
+  hd_dpram #(.AW(16), .DW(16)) u_vram0 (
+    .clk(clk),
+    .addr_a(vr_a_addr), .d_a(vr_a_d), .we_a(vr_a_we[0]), .be_a(vr_a_be), .q_a(q_vram0),
+    .addr_b(rnd_vram_addr_r), .q_b(rnd_vram_q[0])
+  );
+  hd_dpram #(.AW(16), .DW(16)) u_vram1 (
+    .clk(clk),
+    .addr_a(vr_a_addr), .d_a(vr_a_d), .we_a(vr_a_we[1]), .be_a(vr_a_be), .q_a(q_vram1),
+    .addr_b(rnd_vram_addr_r), .q_b(rnd_vram_q[1])
+  );
+  hd_dpram #(.AW(16), .DW(16)) u_vram2 (
+    .clk(clk),
+    .addr_a(vr_a_addr), .d_a(vr_a_d), .we_a(vr_a_we[2]), .be_a(vr_a_be), .q_a(q_vram2),
+    .addr_b(rnd_vram_addr_r), .q_b(rnd_vram_q[2])
+  );
+  // tiletable: port A = CPU r/w, port B = renderer read
+  logic [15:0] tt_q_a;
+  logic [9:0]  tt_cpu_addr;
+  logic        tt_we;
+  logic [15:0] tt_rnd_q;
+  hd_dpram #(.AW(10), .DW(16), .NUMWORDS(1024)) u_tiletable (
+    .clk(clk),
+    .addr_a(tt_cpu_addr), .d_a(i_wdata), .we_a(tt_we), .be_a(i_be), .q_a(tt_q_a),
+    .addr_b(rnd_tt_addr), .q_b(tt_rnd_q)
+  );
+
+  // palette: port A = CPU r/w, port B = scan-out read
+  logic [15:0] pal_q_a;
+  logic [11:0] pal_cpu_addr;
+  logic        pal_we;
+  logic [11:0] so_pen;
+  logic [15:0] pal_scanout_q;
+  hd_dpram #(.AW(12), .DW(16), .NUMWORDS(4096)) u_palette (
+    .clk(clk),
+    .addr_a(pal_cpu_addr), .d_a(i_wdata), .we_a(pal_we), .be_a(i_be), .q_a(pal_q_a),
+    .addr_b(so_pen), .q_b(pal_scanout_q)
+  );
+
+  // scratch: port A = CPU r/w, port B = unused
+  logic [15:0] scr_q_a;
+  logic [11:0] scr_cpu_addr;
+  logic        scr_we;
+  hd_dpram #(.AW(12), .DW(16), .NUMWORDS(4096)) u_scratch (
+    .clk(clk),
+    .addr_a(scr_cpu_addr), .d_a(i_wdata), .we_a(scr_we), .be_a(i_be), .q_a(scr_q_a),
+    .addr_b(12'd0), .q_b()
+  );
+
+  // spr_live: port A = CPU r/w, port B = vblank copy read
+  logic [15:0] spr_live_q_a;
+  logic [10:0] spr_live_cpu_addr;
+  logic        spr_live_we;
+  logic [10:0] spr_live_b_addr;
+  logic [15:0] spr_live_b_q;
+  hd_dpram #(.AW(11), .DW(16), .NUMWORDS(2048)) u_spr_live (
+    .clk(clk),
+    .addr_a(spr_live_cpu_addr), .d_a(i_wdata), .we_a(spr_live_we), .be_a(i_be), .q_a(spr_live_q_a),
+    .addr_b(spr_live_b_addr), .q_b(spr_live_b_q)
+  );
+
+  // spr_buf: port A = vblank copy write, port B = renderer read
+  logic [10:0] spr_buf_a_addr;
+  logic [15:0] spr_buf_a_d;
+  logic        spr_buf_a_we;
+  logic [15:0] spr_buf_q;
+  hd_dpram #(.AW(11), .DW(16), .NUMWORDS(2048)) u_spr_buf (
+    .clk(clk),
+    .addr_a(spr_buf_a_addr), .d_a(spr_buf_a_d), .we_a(spr_buf_a_we), .be_a(2'b11), .q_a(),
+    .addr_b(rnd_spr_addr), .q_b(spr_buf_q)
+  );
+
+  // linebuf: port A = renderer write, port B = scan-out read
+  // padded to 16 bits wide so hd_dpram byte-enable logic covers all bits
+  logic [15:0] lb_rq_wide;
+  wire  [11:0] lb_rq = lb_rq_wide[11:0];
+  hd_dpram #(.AW(11), .DW(16), .NUMWORDS(2048)) u_linebuf (
+    .clk(clk),
+    .addr_a({lb_bank, lb_x}), .d_a({4'd0, lb_pen}), .we_a(lb_we),
+    .be_a(2'b11), .q_a(),
+    .addr_b({vcnt[1:0], hcnt[8:0]}), .q_b(lb_rq_wide)
+  );
 
   // ------------------------------------------------------------------
   // registers
@@ -267,24 +361,13 @@ module i4220_vdp #(
     end
   end
 
-  always_ff @(posedge clk)
-    if (lb_we) linebuf[lb_bank][lb_x] <= lb_pen;
+  // linebuf and tiletable reads handled by BRAM wrappers above
 
-  // renderer-side memory ports (dedicated port B on each BRAM)
-  always_ff @(posedge clk) begin
-    rnd_vram_q[0] <= vram0[rnd_vram_addr];
-    rnd_vram_q[1] <= vram1[rnd_vram_addr];
-    rnd_vram_q[2] <= vram2[rnd_vram_addr];
-    rnd_tt_q      <= tiletable[rnd_tt_addr];
-  end
+  // renderer-side memory ports (vram port B wired in instances above)
+  assign rnd_tt_q = tt_rnd_q;
 
-  // sprite RAM renderer port: buffered copy (or live if not buffered)
-  logic [15:0] spr_buf_q, spr_live_rq;
-  always_ff @(posedge clk) begin
-    spr_buf_q   <= spr_buf[rnd_spr_addr];
-    spr_live_rq <= spr_live[rnd_spr_addr];
-  end
-  assign rnd_spr_q = P_SPR_BUFFERED ? spr_buf_q : spr_live_rq;
+  // sprite RAM renderer port: buffered path only (P_SPR_BUFFERED=1)
+  assign rnd_spr_q = spr_buf_q;
 
   // ------------------------------------------------------------------
   // sprite buffer copy at vblank start (line V_VIS, after last visible)
@@ -292,6 +375,12 @@ module i4220_vdp #(
   logic        cp_run;
   logic [11:0] cp_cnt;
   logic [15:0] cp_q;
+
+  assign spr_live_b_addr = cp_cnt[10:0];
+  assign spr_buf_a_addr  = (cp_cnt != 0) ? (cp_cnt[10:0] - 11'd1) : 11'd0;
+  assign spr_buf_a_d     = cp_q;
+  assign spr_buf_a_we    = cp_run && (cp_cnt != 0);
+
   always_ff @(posedge clk) begin
     if (!rst_n) begin
       cp_run <= 1'b0;
@@ -301,8 +390,7 @@ module i4220_vdp #(
         cp_run <= 1'b1;
         cp_cnt <= '0;
       end else if (cp_run) begin
-        cp_q <= spr_live[cp_cnt[10:0]];
-        if (cp_cnt != 0) spr_buf[cp_cnt[10:0] - 11'd1] <= cp_q;
+        cp_q <= spr_live_b_q;
         if (cp_cnt == 12'd2048) cp_run <= 1'b0;
         cp_cnt <= cp_cnt + 12'd1;
       end
@@ -467,78 +555,52 @@ module i4220_vdp #(
   // cpu-side memory address (word index within the selected RAM)
   wire [15:0] cpu_vword = in_rmw ? rmw_word : i_addr[16:1];
 
-  // registered CPU-side reads (port A)
-  logic [15:0] q_vram0, q_vram1, q_vram2, q_tt, q_pal, q_spr, q_scr;
-  always_ff @(posedge clk) begin
-    q_tt  <= tiletable[i_addr[10:1]];
-    q_pal <= palette[i_addr[12:1]];
-    q_spr <= spr_live[i_addr[11:1]];
-    q_scr <= scratch[i_addr[12:1]];
-  end
+  // CPU-side reads come from port A of the BRAM wrappers (registered)
+  wire [15:0] q_tt  = tt_q_a;
+  wire [15:0] q_pal = pal_q_a;
+  wire [15:0] q_spr = spr_live_q_a;
+  wire [15:0] q_scr = scr_q_a;
 
-  // vram port A: blitter has priority
+  // drive BRAM port A addresses continuously from the CPU bus
+  assign tt_cpu_addr       = i_addr[10:1];
+  assign pal_cpu_addr      = i_addr[12:1];
+  assign spr_live_cpu_addr = i_addr[11:1];
+  assign scr_cpu_addr      = i_addr[12:1];
+
   wire [15:0] wmask_be = {{8{i_be[1]}}, {8{i_be[0]}}};
-  always_ff @(posedge clk) begin
+
+  // vram port A drive logic (combinational -> hd_dpram instances)
+  wire cpu_vram_wr = (bst == B_IDLE) && i_cs && !i_rnw
+                   && (in_vram || in_rmw) && !bl_busy;
+  wire [1:0] cpu_wr_lyr = in_rmw ? rmw_lyr : vlyr;
+
+  always_comb begin
+    vr_a_we = '{default: 1'b0};
     if (bl_we) begin
-      // byte-enable part-selects keep this M10K-inferrable in Quartus
-      unique case (bl_layer)
-        2'd0: begin
-          if (bl_wmask[15]) vram0[bl_addr][15:8] <= bl_wdata[15:8];
-          if (bl_wmask[0])  vram0[bl_addr][7:0]  <= bl_wdata[7:0];
-        end
-        2'd1: begin
-          if (bl_wmask[15]) vram1[bl_addr][15:8] <= bl_wdata[15:8];
-          if (bl_wmask[0])  vram1[bl_addr][7:0]  <= bl_wdata[7:0];
-        end
-        default: begin
-          if (bl_wmask[15]) vram2[bl_addr][15:8] <= bl_wdata[15:8];
-          if (bl_wmask[0])  vram2[bl_addr][7:0]  <= bl_wdata[7:0];
-        end
-      endcase
-    end else if (bst == B_IDLE && i_cs && !i_rnw && (in_vram || in_rmw) && !bl_busy) begin
-      unique case (in_rmw ? rmw_lyr : vlyr)
-        2'd0: begin
-          if (i_be[1]) vram0[cpu_vword][15:8] <= i_wdata[15:8];
-          if (i_be[0]) vram0[cpu_vword][7:0]  <= i_wdata[7:0];
-        end
-        2'd1: begin
-          if (i_be[1]) vram1[cpu_vword][15:8] <= i_wdata[15:8];
-          if (i_be[0]) vram1[cpu_vword][7:0]  <= i_wdata[7:0];
-        end
-        default: begin
-          if (i_be[1]) vram2[cpu_vword][15:8] <= i_wdata[15:8];
-          if (i_be[0]) vram2[cpu_vword][7:0]  <= i_wdata[7:0];
-        end
-      endcase
+      vr_a_addr = bl_addr;
+      vr_a_d    = bl_wdata;
+      vr_a_be   = {bl_wmask[15], bl_wmask[0]};
+      vr_a_we[bl_layer] = 1'b1;
+    end else if (cpu_vram_wr) begin
+      vr_a_addr = cpu_vword;
+      vr_a_d    = i_wdata;
+      vr_a_be   = i_be;
+      vr_a_we[cpu_wr_lyr] = 1'b1;
     end else begin
-      q_vram0 <= vram0[cpu_vword];
-      q_vram1 <= vram1[cpu_vword];
-      q_vram2 <= vram2[cpu_vword];
+      vr_a_addr = cpu_vword;
+      vr_a_d    = '0;
+      vr_a_be   = 2'b11;
     end
   end
 
-  // other RAM writes + register writes
+  // BRAM write enables (combinational, active on the CPU write commit cycle)
+  wire cpu_wr_commit = (bst == B_IDLE) && i_cs && !i_rnw;
+  assign scr_we      = cpu_wr_commit && in_scratch;
+  assign pal_we      = cpu_wr_commit && in_pal;
+  assign spr_live_we = cpu_wr_commit && in_spr;
+  assign tt_we       = cpu_wr_commit && in_tt;
+
   logic reg_w;   // pulse: commit register write this cycle
-  always_ff @(posedge clk) begin
-    if (bst == B_IDLE && i_cs && !i_rnw) begin
-      if (in_scratch) begin
-        if (i_be[1]) scratch[i_addr[12:1]][15:8] <= i_wdata[15:8];
-        if (i_be[0]) scratch[i_addr[12:1]][7:0]  <= i_wdata[7:0];
-      end
-      if (in_pal) begin
-        if (i_be[1]) palette[i_addr[12:1]][15:8] <= i_wdata[15:8];
-        if (i_be[0]) palette[i_addr[12:1]][7:0]  <= i_wdata[7:0];
-      end
-      if (in_spr) begin
-        if (i_be[1]) spr_live[i_addr[11:1]][15:8] <= i_wdata[15:8];
-        if (i_be[0]) spr_live[i_addr[11:1]][7:0]  <= i_wdata[7:0];
-      end
-      if (in_tt) begin
-        if (i_be[1]) tiletable[i_addr[10:1]][15:8] <= i_wdata[15:8];
-        if (i_be[0]) tiletable[i_addr[10:1]][7:0]  <= i_wdata[7:0];
-      end
-    end
-  end
 
   // register file write/read
   function automatic logic [15:0] comb16(input logic [15:0] old);
@@ -725,7 +787,7 @@ module i4220_vdp #(
   // ------------------------------------------------------------------
   // scan-out: linebuf -> palette -> GRB555 decode (2 ce_pix pipeline)
   // ------------------------------------------------------------------
-  logic [11:0] so_pen;
+  // so_pen declared at u_palette instantiation
   logic [15:0] so_pal;
   logic        de0, de1;
   logic        hb0, hb1, vb0, vb1;
@@ -736,12 +798,12 @@ module i4220_vdp #(
       de0 <= (32'(hcnt) < H_VIS) && (32'(vcnt) < V_VIS);
       hb0 <= !(32'(hcnt) < H_VIS);
       vb0 <= !(32'(vcnt) < V_VIS);
-      so_pen <= (32'(hcnt) < H_VIS) ? linebuf[vcnt[1:0]][hcnt[8:0] % 320] : 12'd0;
+      so_pen <= (32'(hcnt) < H_VIS) ? lb_rq : 12'd0;
       // stage 1: palette lookup
       de1 <= de0;
       hb1 <= hb0;
       vb1 <= vb0;
-      so_pal <= palette[so_pen];
+      so_pal <= pal_scanout_q;
       // stage 2: RGB out, aligned with de1 -> o_de
       o_r <= so_pal[10:6];
       o_g <= so_pal[15:11];
@@ -751,6 +813,24 @@ module i4220_vdp #(
       o_vblank <= vb1;
       o_hs <= (32'(hcnt) >= HS_BEG && 32'(hcnt) < HS_END);
       o_vs <= (32'(vcnt) >= VS_BEG && 32'(vcnt) < VS_END);
+    end
+  end
+
+  // ------------------------------------------------------------------
+  // DEBUG: sticky diagnostic flags (latch on first occurrence, never clear)
+  // ------------------------------------------------------------------
+  always_ff @(posedge clk) begin
+    if (!rst_n) begin
+      o_dbg_vdp_write  <= 1'b0;
+      o_dbg_line_start <= 1'b0;
+      o_dbg_rnd_done   <= 1'b0;
+      o_dbg_lb_nonzero <= 1'b0;
+    end else begin
+      if (cpu_wr_commit)  o_dbg_vdp_write  <= 1'b1;
+      if (line_start)     o_dbg_line_start <= 1'b1;
+      if (rnd_done)       o_dbg_rnd_done   <= 1'b1;
+      if (lb_we && lb_pen != 12'd0)
+                          o_dbg_lb_nonzero <= 1'b1;
     end
   end
 

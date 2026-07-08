@@ -1,19 +1,20 @@
 // SDRAM controller + ROM arbiter for the Hyper Duel core.
 //
-// Serves hyprduel_sys's three read clients from one 16-bit SDRAM
-// (MiSTer 32 MB module baseline: 4 banks x 8192 rows x 512 cols) plus
-// the ioctl download write path:
+// Serves hyprduel_sys's three read clients plus a CPU shared-RAM port
+// from one 16-bit SDRAM (MiSTer 32 MB module baseline: 4 banks x 8192
+// rows x 512 cols) plus the ioctl download write path:
 //
-//   priority 0  GFX stream  (i_gfx_req/addr/len -> len byte pulses)
-//   priority 1  main 68000 ROM (single word, req/valid)
-//   priority 2  OKI sample ROM (jt-style addr/ok, byte held stable)
+//   priority 0  download    byte pairs written as words (highest; core in reset)
+//   priority 1  shared3 CPU RAM (single word R/W, byte enables via DQM)
+//   priority 2  GFX stream  (i_gfx_req/addr/len -> len byte pulses)
+//   priority 3  main 68000 ROM (single word, req/valid)
+//   priority 4  OKI sample ROM (jt-style addr/ok, byte held stable)
 //   refresh     slots into idle gaps, forced ahead of grants if overdue
-//   download    byte writes via DQM masks (highest priority; the core
-//               is held in reset during loading anyway)
 //
 // SDRAM byte map (matches mister/README.md and the MRA):
 //   0x000000 main ROM (512 KB)   0x080000 GFX ROM (4 MB)
 //   0x480000 OKI samples (256 KB)
+//   0x500000 shared3 CPU RAM (112 KB, not downloaded via MRA)
 //
 // Policy: close-page. Every access is ACT, tRCD, CAS(+auto precharge
 // on the last read), so banks are always precharged and refresh can
@@ -56,11 +57,21 @@ module hyprduel_sdram #(
     output logic [7:0]  o_oki_data,
     output logic        o_oki_ok,
 
+    // shared3 CPU RAM (word R/W, byte enables via DQM)
+    input  logic        i_sr3_req,      // level-held until ack
+    input  logic        i_sr3_we,
+    input  logic [16:0] i_sr3_addr,     // word address 0..57343
+    input  logic [15:0] i_sr3_wdata,
+    input  logic [1:0]  i_sr3_be,       // {UDS,LDS} byte enables
+    output logic [15:0] o_sr3_rdata,
+    output logic        o_sr3_ack,      // 1-cycle pulse (rdata valid on reads)
+
     // download write port (byte writes)
     input  logic        i_dl_wr,        // 1-cycle pulse per byte
     input  logic [24:0] i_dl_addr,      // byte address in SDRAM space
     input  logic [7:0]  i_dl_data,
     output logic        o_dl_busy,
+    input  logic        i_dl_active,    // high during download (ioctl_download)
 
     // SDRAM pins
     output logic [12:0] SDRAM_A,
@@ -72,13 +83,25 @@ module hyprduel_sdram #(
     output logic        SDRAM_nRAS,
     output logic        SDRAM_nCAS,
     output logic        SDRAM_nWE,
-    output logic        SDRAM_CKE
+    output logic        SDRAM_CKE,
+
+    // DEBUG: download verification
+    output logic        dbg_dl_saw,       // dl_wr ever fired
+    output logic [7:0]  dbg_dl_byte0,     // first download byte ADDRESS [15:8] (expect 00)
+    output logic [7:0]  dbg_dl_byte1,     // first download byte ADDRESS [7:0]  (expect 00)
+    output logic [23:0] dbg_dl_count,     // total download writes (full stream = 0x4C0000)
+    output logic [15:0] dbg_selftest,     // EARLY readback of word 0 (us after write; decay probe)
+    output logic [15:0] dbg_postdl,       // post-download GFX region probe (expect 0x3422)
+    output logic [23:0] dbg_dl_written,   // SDRAM write CAS issued for DL owner
+    output logic [15:0] dbg_dl_dropped,   // bytes lost to FIFO overflow (saturating)
+    output logic [15:0] dbg_fsm_info      // CMD_REF issue counter (live = refresh alive)
 );
 
   // word-address bases (byte base / 2)
   localparam logic [23:0] MROM_WBASE = 24'h000000;
   localparam logic [23:0] GFX_WBASE  = 24'h040000;
   localparam logic [23:0] OKI_WBASE  = 24'h240000;
+  localparam logic [23:0] SR3_WBASE  = 24'h280000; // shared3 CPU RAM (112 KB)
 
   // command encoding {nCS, nRAS, nCAS, nWE}
   localparam logic [3:0] CMD_NOP  = 4'b0111;
@@ -111,12 +134,13 @@ module hyprduel_sdram #(
 
   // ------------------------------------------------------------------
   // read-return tag pipeline: written by the FSM at CAS issue, lands
-  // in sync with dq_in P_RET cycles later. 0 none, 1 gfx, 2 mrom, 3 oki
+  // in sync with dq_in P_RET cycles later.
+  // 0=none, 1=gfx, 2=mrom, 3=oki, 4=sr3
   // ------------------------------------------------------------------
-  logic [1:0] ret_tag [P_RET+1];
+  logic [2:0] ret_tag [P_RET+1];
   always_ff @(posedge clk)
     for (int i = P_RET; i > 0; i--) ret_tag[i] <= ret_tag[i-1];
-  wire [1:0] land_tag = ret_tag[P_RET];
+  wire [2:0] land_tag = ret_tag[P_RET];
 
   // ------------------------------------------------------------------
   // main FSM (single driver for: cmd/addr/dqm, state, pends, refresh)
@@ -127,16 +151,29 @@ module hyprduel_sdram #(
   } st_e;
   st_e st;
 
-  typedef enum logic [1:0] {OWN_GFX, OWN_MROM, OWN_OKI, OWN_DL} own_e;
+  typedef enum logic [2:0] {OWN_GFX, OWN_MROM, OWN_OKI, OWN_DL, OWN_SR3} own_e;
   own_e owner;
 
-  logic        gfx_pend, mrom_pend, oki_pend, dl_pend;
+  logic        gfx_pend, mrom_pend, oki_pend, sr3_pend;
+  logic [1:0]  pdl_st;
+  logic [1:0]  early_st;
+  logic [15:0] dbg_refc;           // steady-state CMD_REF issue counter
+  logic [7:0]  dl_grant_cnt;       // times FSM granted OWN_DL in ST_IDLE
   logic [21:0] gfx_addr_q;
   logic [6:0]  gfx_len_q;
   logic [17:0] mrom_addr_q;
   logic [17:0] oki_addr_q;
-  logic [24:0] dl_addr_q;
-  logic [7:0]  dl_data_q;
+  logic [15:0] dl_data_q;          // full word {even byte, odd byte}
+  logic [7:0]  dl_even_byte;       // stashed even byte awaiting its odd pair
+  logic        sr3_rmw_fly;        // read-modify-write read in flight
+  logic        sr3_busy;           // sr3 op accepted, ack not yet issued
+  logic        probe_pend;         // GFX probe read request
+  logic        probe_fly;          // GFX probe read in flight (ret tag 6)
+  logic [16:0] sr3_addr_q;
+  logic [15:0] sr3_wdata_q;
+  logic [1:0]  sr3_be_q;
+  logic        sr3_we_q;
+  logic        sr3_wr_done;        // set in FSM at write CAS, cleared by landing block
   logic        gfx_start;          // pulse to the byte-path block
 
   logic [23:0] cur_word;
@@ -166,20 +203,79 @@ module hyprduel_sdram #(
     SDRAM_A    <= '0;
     SDRAM_BA   <= cur_word[23:22];
     dq_oe      <= 1'b0;
-    ret_tag[0] <= 2'd0;
+    ret_tag[0] <= 3'd0;
     gfx_start  <= 1'b0;
+    sr3_wr_done <= 1'b0;
+    dlf_pop    <= 1'b0;
 
     if (!rst_n) begin
       st <= ST_INIT_WAIT;
       owner <= OWN_GFX;
       o_ready <= 1'b0;
       gfx_pend <= 1'b0; mrom_pend <= 1'b0;
-      oki_pend <= 1'b0; dl_pend <= 1'b0;
+      oki_pend <= 1'b0; sr3_pend <= 1'b0;
+      sr3_wr_done <= 1'b0;
+      sr3_rmw_fly <= 1'b0;
+      sr3_busy <= 1'b0;
+      probe_pend <= 1'b0;
+      probe_fly <= 1'b0;
       init_cnt <= '0; wait_cnt <= '0;
       cur_word <= '0; words_left <= '0; cas_left <= '0;
       ref_cnt <= '0; ref_due <= 1'b0; ref_urgent <= 1'b0;
       SDRAM_DQML <= 1'b1; SDRAM_DQMH <= 1'b1;
+      dbg_dl_saw <= 1'b0;
+      dbg_dl_byte0 <= '0;
+      dbg_dl_byte1 <= '0;
+      dbg_dl_count <= '0;
+      dbg_dl_written <= '0;
+      dbg_dl_dropped <= '0;
+      dl_grant_cnt <= '0;
+      dbg_selftest <= 16'hDEAD;
+      dbg_postdl   <= 16'hDEAD;
+      dbg_refc     <= '0;
+      pdl_st       <= 2'd0;
+      early_st     <= 2'd0;
     end else begin
+      // EARLY readback probe: read word 0 back microseconds after its two
+      // bytes are written, while the download is still streaming. Compared
+      // against dbg_postdl (same word, seconds later) this discriminates
+      // "write never landed" from "data decayed = refresh dead on hardware".
+      case (early_st)
+        2'd0: if (dbg_dl_written >= 24'd4 && i_dl_active
+                   && st == ST_IDLE && !mrom_pend) begin
+                mrom_pend   <= 1'b1;
+                mrom_addr_q <= 18'd0;
+                early_st    <= 2'd1;
+              end
+        2'd1: if (o_mrom_valid && mrom_addr_q == 18'd0) begin
+                dbg_selftest <= o_mrom_data;
+                early_st     <= 2'd2;
+              end
+        default: ;
+      endcase
+
+      // post-download GFX probe: read GFX region word GFX_WBASE+4 (SDRAM
+      // bytes 0x080008-9). Expected 0x3422 per the sim-verified
+      // gfxrom.bin; anything else means the MRA GFX interleave is wrong.
+      if (pdl_st == 2'd0 && dbg_dl_saw && !i_dl_active && dlf_empty) begin
+        probe_pend <= 1'b1;
+        pdl_st     <= 2'd1;
+      end
+      if (land_tag == 3'd6) begin
+        dbg_postdl <= dq_in;
+        probe_fly  <= 1'b0;
+        pdl_st     <= 2'd2;
+      end
+
+      // DEBUG: capture download writes; byte0/1 hold the FIRST BYTE'S
+      // ADDRESS (expect 0000) to rule out an ioctl offset
+      if (i_dl_wr) begin
+        dbg_dl_saw <= 1'b1;
+        dbg_dl_count <= dbg_dl_count + 24'd1;
+        if (dbg_dl_count == 24'd0) {dbg_dl_byte0, dbg_dl_byte1} <= i_dl_addr[15:0];
+        if (i_dl_addr[0] && dlf_full && !(&dbg_dl_dropped))
+          dbg_dl_dropped <= dbg_dl_dropped + 16'd2;  // word lost = 2 bytes
+      end
       // refresh bookkeeping
       if (32'(ref_cnt) == REFRESH_PERIOD - 1) begin
         ref_cnt <= '0;
@@ -195,8 +291,24 @@ module hyprduel_sdram #(
       if (i_mrom_rd) begin
         mrom_pend <= 1'b1; mrom_addr_q <= i_mrom_addr;
       end
-      if (i_dl_wr) begin
-        dl_pend <= 1'b1; dl_addr_q <= i_dl_addr; dl_data_q <= i_dl_data;
+      // sr3_busy holds off relatching while the op is in flight: pend
+      // clears at CAS but the requester keeps req asserted until ack,
+      // and a relatch in that window would issue a duplicate op whose
+      // phantom ack could complete a LATER request with stale data
+      if (i_sr3_req && !sr3_pend && !sr3_busy) begin
+        sr3_pend <= 1'b1; sr3_busy <= 1'b1;
+        sr3_addr_q <= i_sr3_addr;
+        sr3_wdata_q <= i_sr3_wdata; sr3_be_q <= i_sr3_be;
+        sr3_we_q <= i_sr3_we;
+      end
+      if (o_sr3_ack) sr3_busy <= 1'b0;
+      // rmw read landed: merge the untouched lanes into the write data and
+      // promote to a full-word write (re-granted from ST_IDLE)
+      if (land_tag == 3'd5) begin
+        sr3_wdata_q <= {sr3_be_q[1] ? sr3_wdata_q[15:8] : dq_in[15:8],
+                        sr3_be_q[0] ? sr3_wdata_q[7:0]  : dq_in[7:0]};
+        sr3_be_q    <= 2'b11;
+        sr3_rmw_fly <= 1'b0;
       end
       if (oki_want && !oki_pend && st == ST_IDLE) begin
         oki_pend <= 1'b1; oki_addr_q <= i_oki_addr;
@@ -231,13 +343,22 @@ module hyprduel_sdram #(
           SDRAM_DQML <= 1'b0; SDRAM_DQMH <= 1'b0;
           if (wait_cnt != 0) wait_cnt <= wait_cnt - 1'b1;
           else if (ref_urgent || (ref_due && !gfx_pend && !mrom_pend
-                                  && !oki_pend && !dl_pend)) begin
+                                  && !oki_pend && dlf_empty && !sr3_pend)) begin
             cmd <= CMD_REF;
             ref_due <= 1'b0; ref_urgent <= 1'b0;
+            dbg_refc <= dbg_refc + 16'd1;
             wait_cnt <= 4'd8; st <= ST_RFC;
-          end else if (dl_pend) begin
+          end else if (!dlf_empty) begin
             owner <= OWN_DL;
-            cur_word <= dl_addr_q[24:1];
+            dl_data_q <= dlf[dlf_rp][15:0];
+            dlf_pop   <= 1'b1;
+            cur_word <= dlf[dlf_rp][39:16];
+            if (!(&dl_grant_cnt)) dl_grant_cnt <= dl_grant_cnt + 8'd1;
+            st <= ST_ACT;
+          end else if (sr3_pend && !sr3_rmw_fly) begin
+            owner <= OWN_SR3;
+            cur_word <= SR3_WBASE + 24'(sr3_addr_q);
+            words_left <= 7'd1;
             st <= ST_ACT;
           end else if (gfx_pend) begin
             owner <= OWN_GFX;
@@ -256,6 +377,13 @@ module hyprduel_sdram #(
             cur_word <= OKI_WBASE + 24'(oki_addr_q[17:1]);
             words_left <= 7'd1;
             st <= ST_ACT;
+          end else if (probe_pend) begin
+            owner <= OWN_MROM;                 // rides the mrom read path
+            probe_fly <= 1'b1;                 // but lands with tag 6
+            probe_pend <= 1'b0;
+            cur_word <= GFX_WBASE + 24'd4;
+            words_left <= 7'd1;
+            st <= ST_ACT;
           end
         end
 
@@ -271,23 +399,41 @@ module hyprduel_sdram #(
         end
         ST_RCD: st <= ST_CAS;       // tRCD = 2 cycles (ACT, this, CAS)
         ST_CAS: begin
+          // The MiSTer SDRAM board ties DQML/DQMH low, so byte masking is
+          // impossible on hardware: ALL writes are full 16-bit words. The
+          // download path pairs bytes into words; partial sr3 writes go
+          // through read-modify-write (rmw read tagged 5, merged below).
           if (owner == OWN_DL) begin
             cmd <= CMD_WRIT; dq_oe <= 1'b1;
-            dq_out <= {dl_data_q, dl_data_q};
+            dq_out <= dl_data_q;                     // {even byte, odd byte}
             SDRAM_A <= {4'b0010, cur_word[8:0]};     // A10 = auto precharge
-            // even byte address = high lane; DQM=1 masks the other lane
-            SDRAM_DQML <= !dl_addr_q[0];
-            SDRAM_DQMH <=  dl_addr_q[0];
-            dl_pend <= 1'b0;
+            SDRAM_DQML <= 1'b0; SDRAM_DQMH <= 1'b0;
+            dbg_dl_written <= dbg_dl_written + 24'd2;  // counts BYTES
+            wait_cnt <= 4'd3;                        // tWR + tRP
+            st <= ST_WWAIT;
+          end else if (owner == OWN_SR3 && sr3_we_q && sr3_be_q == 2'b11) begin
+            // sr3 full-word write (partial writes arrive here only after
+            // the rmw merge promotes be to 2'b11)
+            cmd <= CMD_WRIT; dq_oe <= 1'b1;
+            dq_out <= sr3_wdata_q;
+            SDRAM_A <= {4'b0010, cur_word[8:0]};     // A10 = auto precharge
+            SDRAM_DQML <= 1'b0; SDRAM_DQMH <= 1'b0;
+            sr3_pend <= 1'b0;
+            sr3_wr_done <= 1'b1;                     // landing block pulses ack
             wait_cnt <= 4'd3;                        // tWR + tRP
             st <= ST_WWAIT;
           end else if (owner != OWN_GFX || bf_room) begin
             cmd <= CMD_READ;
             SDRAM_A <= {(cas_left == 6'd1) ? 4'b0010 : 4'b0000,
                         cur_word[8:0]};              // AP on the last CAS
-            ret_tag[0] <= (owner == OWN_GFX)  ? 2'd1 :
-                          (owner == OWN_MROM) ? 2'd2 : 2'd3;
+            ret_tag[0] <= (owner == OWN_GFX)  ? 3'd1 :
+                          (owner == OWN_MROM) ? (probe_fly ? 3'd6 : 3'd2) :
+                          (owner == OWN_SR3)  ? (sr3_we_q ? 3'd5 : 3'd4) : 3'd3;
             if (owner == OWN_OKI) oki_fly <= oki_addr_q;
+            if (owner == OWN_SR3) begin
+              if (sr3_we_q) sr3_rmw_fly <= 1'b1;     // rmw read: keep pend
+              else          sr3_pend <= 1'b0;
+            end
             cur_word <= cur_word + 24'd1;
             words_left <= words_left - 7'd1;
             cas_left <= cas_left - 6'd1;
@@ -297,7 +443,7 @@ module hyprduel_sdram #(
                 st <= ST_ROWGAP;                     // row-crossing re-ACT
               end else begin
                 if (owner == OWN_GFX)  gfx_pend  <= 1'b0;
-                if (owner == OWN_MROM) mrom_pend <= 1'b0;
+                if (owner == OWN_MROM && !probe_fly) mrom_pend <= 1'b0;
                 if (owner == OWN_OKI)  oki_pend  <= 1'b0;
                 wait_cnt <= 4'd2;                    // cover tRP
                 st <= ST_IDLE;
@@ -323,22 +469,31 @@ module hyprduel_sdram #(
   end
 
   // ------------------------------------------------------------------
-  // mrom / oki landing (single driver for their outputs)
+  // mrom / oki / sr3 landing (single driver for their outputs)
   // ------------------------------------------------------------------
   always_ff @(posedge clk) begin
     o_mrom_valid <= 1'b0;
+    o_sr3_ack <= 1'b0;
     if (!rst_n) begin
       oki_have <= 1'b0; oki_served <= '0;
       o_mrom_data <= '0; o_oki_data <= '0;
+      o_sr3_rdata <= '0;
     end else begin
-      if (land_tag == 2'd2) begin
+      if (land_tag == 3'd2) begin
         o_mrom_data <= dq_in;
         o_mrom_valid <= 1'b1;
       end
-      if (land_tag == 2'd3) begin
+      if (land_tag == 3'd3) begin
         o_oki_data <= oki_fly[0] ? dq_in[7:0] : dq_in[15:8];
         oki_served <= oki_fly;
         oki_have <= 1'b1;
+      end
+      if (land_tag == 3'd4) begin
+        o_sr3_rdata <= dq_in;
+        o_sr3_ack <= 1'b1;
+      end
+      if (sr3_wr_done) begin
+        o_sr3_ack <= 1'b1;         // write ack (data already committed)
       end
     end
   end
@@ -376,7 +531,7 @@ module hyprduel_sdram #(
         gfx_left <= gfx_len_q;
         skip_first <= gfx_addr_q[0];
       end else begin
-        if (land_tag == 2'd1) begin
+        if (land_tag == 3'd1) begin
           bfifo[bf_wp] <= dq_in;
           bf_wp <= bf_wp + 1'b1;
           push = 1'b1;
@@ -405,6 +560,45 @@ module hyprduel_sdram #(
     end
   end
 
-  assign o_dl_busy = dl_pend;
+  // ------------------------------------------------------------------
+  // download FIFO (16-deep, one WORD per entry): the ioctl byte stream
+  // is strictly sequential from address 0, so bytes are paired into
+  // words before entering the FIFO (even byte stashed, pushed with its
+  // odd sibling). Full-word writes are mandatory because the MiSTer
+  // SDRAM board ties DQML/DQMH low (no byte masking).
+  // ------------------------------------------------------------------
+  logic [39:0] dlf [0:15];      // {word_addr[23:0], data[15:0]}
+  logic [3:0]  dlf_wp, dlf_rp;
+  logic [4:0]  dlf_cnt;         // 0..16
+  wire         dlf_empty = (dlf_cnt == 5'd0);
+  wire         dlf_full  = (dlf_cnt == 5'd16);
+  logic        dlf_pop;         // set by main FSM when it consumes a FIFO entry
+  wire         dlf_push = i_dl_wr && i_dl_addr[0] && !dlf_full;
+
+  always_ff @(posedge clk) begin
+    if (!rst_n) begin
+      dlf_wp  <= '0;
+      dlf_rp  <= '0;
+      dlf_cnt <= '0;
+    end else begin
+      if (i_dl_wr && !i_dl_addr[0])
+        dl_even_byte <= i_dl_data;
+      if (dlf_push) begin
+        dlf[dlf_wp] <= {i_dl_addr[24:1], dl_even_byte, i_dl_data};
+        dlf_wp <= dlf_wp + 4'd1;
+      end
+      if (dlf_pop) begin
+        dlf_rp <= dlf_rp + 4'd1;
+      end
+      case ({dlf_push, dlf_pop})
+        2'b10:   dlf_cnt <= dlf_cnt + 5'd1;
+        2'b01:   dlf_cnt <= dlf_cnt - 5'd1;
+        default: ;
+      endcase
+    end
+  end
+
+  assign o_dl_busy = !o_ready || (dlf_cnt >= 5'd12);
+  assign dbg_fsm_info = dbg_refc;   // REFC row: changing digits = refresh alive
 
 endmodule

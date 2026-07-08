@@ -45,7 +45,13 @@ localparam NANO_DOB_ALU = 2'b11;
 
 
 // Clocks, phases and resets
+// packed only for Verilator (BLKANDNBLK on unpacked structs); Quartus gets
+// the upstream unpacked form - packed here detonates Quartus 17 elaboration
+`ifdef VERILATOR
 typedef struct packed {
+`else
+typedef struct {
+`endif
 	logic clk;
 	logic extReset;			// External sync reset on emulated system
 	logic pwrUp;			// Asserted together with reset on emulated system coldstart
@@ -53,7 +59,11 @@ typedef struct packed {
 } s_clks;
 
 // IRD decoded signals
+`ifdef VERILATOR
 typedef struct packed {
+`else
+typedef struct {
+`endif
 	logic isPcRel;
 	logic isTas;
 	logic implicitSp;
@@ -70,7 +80,11 @@ typedef struct packed {
 } s_irdecod;
 
 // Nano code decoded signals
+`ifdef VERILATOR
 typedef struct packed {
+`else
+typedef struct {
+`endif
 	logic permStart;
 	logic waitBusFinish;
 	logic isWrite;

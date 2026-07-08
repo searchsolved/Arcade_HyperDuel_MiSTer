@@ -93,9 +93,10 @@ d.joinpath('gfxrom.hex').write_text('\n'.join('%02x'%b for b in d.joinpath('gfxr
 	      $(BUILD)/mame/frame_$$f/render.ppm || fail=1; \
 	done; exit $$fail
 
-$(BUILD)/obj_vdp/Vtb_vdp: tb/tb_vdp.sv ../rtl/i4220_vdp.sv ../rtl/i4220_render.sv ../rtl/i4220_blitter.sv
-	$(VERILATOR) --binary --timing -Wall -Wno-UNUSEDSIGNAL --timescale 1ns/1ps \
+$(BUILD)/obj_vdp/Vtb_vdp: tb/tb_vdp.sv ../rtl/i4220_vdp.sv ../rtl/i4220_render.sv ../rtl/i4220_blitter.sv ../rtl/hd_dpram.sv ../rtl/hd_tdpram.sv
+	$(VERILATOR) --binary --timing -Wall -Wno-UNUSEDSIGNAL -Wno-PINCONNECTEMPTY --timescale 1ns/1ps \
 		--Mdir $(BUILD)/obj_vdp ../rtl/i4220_render.sv ../rtl/i4220_blitter.sv \
+		../rtl/hd_dpram.sv ../rtl/hd_tdpram.sv \
 		../rtl/i4220_vdp.sv tb/tb_vdp.sv --top-module tb_vdp
 
 # full VDP top (bus-loaded, free-running timing, scan-out capture) vs MAME
@@ -111,7 +112,7 @@ vdp-verify: $(BUILD)/obj_vdp/Vtb_vdp
 
 FX68K := ../rtl/vendor/fx68k
 
-$(BUILD)/obj_sys/Vtb_system: tb/tb_system.sv tb/sdram_model.sv ../rtl/hyprduel_sys.sv ../rtl/hyprduel_sdram.sv ../rtl/i4220_vdp.sv ../rtl/i4220_render.sv ../rtl/i4220_blitter.sv $(FX68K)/fx68k.sv $(FX68K)/fx68kAlu.sv
+$(BUILD)/obj_sys/Vtb_system: tb/tb_system.sv tb/sdram_model.sv ../rtl/hyprduel_sys.sv ../rtl/hyprduel_sdram.sv ../rtl/i4220_vdp.sv ../rtl/i4220_render.sv ../rtl/i4220_blitter.sv ../rtl/hd_dpram.sv ../rtl/hd_tdpram.sv $(FX68K)/fx68k.sv $(FX68K)/fx68kAlu.sv
 	cp -f $(FX68K)/microrom.mem $(FX68K)/nanorom.mem .
 	$(VERILATOR) --binary --timing -Wno-fatal --timescale 1ns/1ps \
 		--Mdir $(BUILD)/obj_sys -I../rtl/vendor/jt51/hdl \
@@ -119,6 +120,7 @@ $(BUILD)/obj_sys/Vtb_system: tb/tb_system.sv tb/sdram_model.sv ../rtl/hyprduel_s
 		$(wildcard ../rtl/vendor/jt51/hdl/jt51*.v) \
 		$(wildcard ../rtl/vendor/jt6295/hdl/*.v) \
 		../rtl/i4220_render.sv ../rtl/i4220_blitter.sv ../rtl/i4220_vdp.sv \
+		../rtl/hd_dpram.sv ../rtl/hd_tdpram.sv \
 		../rtl/hyprduel_sys.sv ../rtl/hyprduel_sdram.sv tb/sdram_model.sv \
 		tb/tb_system.sv --top-module tb_system
 
@@ -136,6 +138,17 @@ boot: $(BUILD)/obj_sys/Vtb_system $(BUILD)/mame/mainrom.hex
 		$(if $(AUDIODUMP),+AUDIODUMP=$(AUDIODUMP)) \
 		$(if $(AUDIOSPLIT),+AUDIOSPLIT=$(AUDIOSPLIT)) \
 		$(if $(SDRAM),+SDRAM=$(SDRAM))
+
+$(BUILD)/obj_dl/Vtb_download: tb/tb_download.sv tb/sdram_model.sv ../rtl/hyprduel_sdram.sv
+	$(VERILATOR) --binary --timing -Wno-fatal --timescale 1ns/1ps \
+		--Mdir $(BUILD)/obj_dl \
+		../rtl/hyprduel_sdram.sv tb/sdram_model.sv \
+		tb/tb_download.sv --top-module tb_download
+
+download: $(BUILD)/obj_dl/Vtb_download
+	$(BUILD)/obj_dl/Vtb_download
+
+.PHONY: download
 
 clean:
 	rm -rf $(BUILD)

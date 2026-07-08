@@ -27,7 +27,7 @@ module jt6295_adpcm(
 );
 
 
-reg [10:0] lut[0:48];
+(* ramstyle = "logic" *) reg [10:0] lut[0:63];
 
 reg [ 5:0] idx_inc_II;
 reg [ 5:0] delta_idx_I,delta_idx_II, delta_idx_III, delta_idx_IV;
@@ -116,7 +116,7 @@ jt6295_sh_rst #(.WIDTH(4), .STAGES(4) ) u_att
 wire signed [11:0] snd_out;
 reg  signed [11:0] snd_V, snd_VI;
 reg  signed [12:0] unlim_V;
-reg  signed [ 6:0] gain_lut[0:15];
+(* ramstyle = "logic" *) reg  signed [ 6:0] gain_lut[0:15];
 reg  signed [ 6:0] gain_VI; // leave the MSB for the sign
 reg                ov_V;
 wire signed [16:0] mul_VI = snd_VI * gain_VI; // multipliers are abundant
