@@ -73,3 +73,22 @@ Goal: first public Imagetek I4220 core. This doc is the gap between
 2. Public repo: include the full sim harness (great for contributors,
    requires MAME-dump bootstrap docs) or rbf-only releases first?
 3. magerror support in v1 or defer?
+
+## Note from 2026-07-10 audio regression check
+
+build/boot_final/audio.raw (July 5) is OBSOLETE as an audio reference:
+it was captured on the pre-arbiter-fix core where the sub (sound) CPU
+was starved on sr3, so its note timing lags - envelope matches, sample
+correlation does not. For the R2 audio check, capture FRESH MAME
+reference audio and compare against the current tree; do not use the
+old raws. Cross-build regression evidence today: audio transitions
+355,399 (tag build) vs 355,402 (with emit2+16b fetch) over the same
+1500 frames = audio path unaffected by the renderer/SDRAM changes.
+
+Fresh MAME reference audio CAPTURED 2026-07-10 (not committed - lives at
+sim/build/mame/refaudio/hyprduel_boot45s.wav, regenerate with:
+  mame hyprduel -rompath ../roms -video none -nothrottle \
+    -wavwrite build/mame/refaudio/hyprduel_boot45s.wav -seconds_to_run 45
+48kHz mono, onset 17.67s (matches the documented 17.6s first note),
+jingle 16-24s, demo music from 28s. Compare onset-aligned (our boot is
+faster than MAME's); sim rate is 80MHz/2048 = 39062.5Hz - resample.
