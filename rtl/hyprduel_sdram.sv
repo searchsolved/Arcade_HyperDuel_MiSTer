@@ -43,7 +43,11 @@ module hyprduel_sdram #(
     input  logic        i_gfx_req,      // 1-cycle pulse; addr/len then stable
     input  logic [21:0] i_gfx_addr,
     input  logic [6:0]  i_gfx_len,      // bytes, 1..64
-    output logic [7:0]  o_gfx_data,
+    // WORD-mode stream (even addr AND even len, e.g. renderer/CPU window):
+    // each valid pulse carries TWO bytes - [15:8] = even (lower) address,
+    // [7:0] = odd. Byte-mode requests (blitter, len 1) pulse one byte per
+    // valid in [7:0].
+    output logic [15:0] o_gfx_data,
     output logic        o_gfx_valid,
 
     // main 68000 ROM client (word address within 512 KB)
@@ -597,6 +601,7 @@ module hyprduel_sdram #(
   logic        bf_hi;              // next byte from high lane (even addr)
   logic [6:0]  gfx_left;
   logic        skip_first;         // odd start address: drop first byte
+  logic        gfx_wmode;          // even addr + even len: emit whole words
 
   assign bf_room = (bf_cnt < 5'd12);
 
@@ -608,6 +613,7 @@ module hyprduel_sdram #(
     if (!rst_n) begin
       bf_wp <= '0; bf_rp <= '0; bf_cnt <= '0;
       bf_hi <= 1'b1; gfx_left <= '0; skip_first <= 1'b0;
+      gfx_wmode <= 1'b0;
       o_gfx_data <= '0;
     end else begin
       if (gfx_start) begin
@@ -615,6 +621,7 @@ module hyprduel_sdram #(
         bf_hi <= 1'b1;
         gfx_left <= gfx_len_q;
         skip_first <= gfx_addr_q[0];
+        gfx_wmode <= !gfx_addr_q[0] && !gfx_len_q[0];
       end else begin
         if (land_tag == 3'd1) begin
           bfifo[bf_wp] <= dq_in;
@@ -622,11 +629,19 @@ module hyprduel_sdram #(
           push = 1'b1;
         end
         if (bf_cnt != 0 && gfx_left != 0) begin
-          if (skip_first) begin
+          if (gfx_wmode) begin
+            // word mode: one whole word per valid, 2 bytes retired
+            o_gfx_data <= bfifo[bf_rp];
+            o_gfx_valid <= 1'b1;
+            gfx_left <= gfx_left - 7'd2;
+            bf_rp <= bf_rp + 1'b1;
+            pop = 1'b1;
+          end else if (skip_first) begin
             skip_first <= 1'b0;
             bf_hi <= 1'b0;         // word stays; low lane is byte one
           end else begin
-            o_gfx_data <= bf_hi ? bfifo[bf_rp][15:8] : bfifo[bf_rp][7:0];
+            o_gfx_data <= {8'd0,
+                           bf_hi ? bfifo[bf_rp][15:8] : bfifo[bf_rp][7:0]};
             o_gfx_valid <= 1'b1;
             gfx_left <= gfx_left - 7'd1;
             bf_hi <= !bf_hi;

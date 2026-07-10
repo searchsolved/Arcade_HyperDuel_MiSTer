@@ -122,7 +122,7 @@ assign BUTTONS = 0;
   wire        gfx_req, gfx_valid;
   wire [21:0] gfx_addr;
   wire  [6:0] gfx_len;
-  wire  [7:0] gfx_data;
+  wire [15:0] gfx_data;   // word-mode GFX stream (2 bytes/valid)
   wire        dl_busy;
   wire        rom_load = ioctl_download && (ioctl_index[7:0] == 8'd0);
   wire        sr3_req, sr3_we, sr3_ack;

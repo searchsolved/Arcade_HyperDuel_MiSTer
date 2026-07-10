@@ -32,7 +32,7 @@ module tb_system;
   logic              rom_req;
   logic [GFX_AW-1:0] rom_addr;
   logic [6:0]        rom_len;
-  logic [7:0]        rom_data;
+  logic [15:0]       rom_data;
   logic              rom_valid;
   logic [7:0] dbg_subctl;
   logic       dbg_subrst;
@@ -56,7 +56,7 @@ module tb_system;
   wire        mrom_valid_mx = (use_sdram != 0) ? ctl_mrom_valid : mrom_valid;
   wire [7:0]  oki_data_mx   = (use_sdram != 0) ? ctl_oki_data   : oki_data;
   wire        oki_ok_mx     = (use_sdram != 0) ? ctl_oki_ok     : oki_ok;
-  wire [7:0]  rom_data_mx   = (use_sdram != 0) ? ctl_gfx_data   : rom_data;
+  wire [15:0] rom_data_mx   = (use_sdram != 0) ? ctl_gfx_data   : rom_data;
   wire        rom_valid_mx  = (use_sdram != 0) ? ctl_gfx_valid  : rom_valid;
 
   // shared3 SDRAM port wires
@@ -89,13 +89,31 @@ module tb_system;
   wire [15:0] sr3_rdata_mx = (use_sdram != 0) ? ctl_sr3_rdata : sr3_rdata_ideal;
   wire        sr3_ack_mx   = (use_sdram != 0) ? ctl_sr3_ack   : sr3_ack_ideal;
 
+  // scripted inputs: +INPUTS=<file>, lines of "<frame> <p1p2hex> <systemhex>"
+  // (active-low, applied at that frame and held until the next line)
+  logic [15:0] inp_p1p2   = 16'hFFFF;
+  logic [15:0] inp_system = 16'hFFFF;
+  int          inp_fh, inp_frame;
+  logic [15:0] inp_v1, inp_v2;
+  bit          inp_pending;
+  initial begin
+    string inpath;
+    inp_pending = 0;
+    inp_fh = 0;
+    if ($value$plusargs("INPUTS=%s", inpath)) begin
+      inp_fh = $fopen(inpath, "r");
+      if (inp_fh == 0) $fatal(1, "cannot open +INPUTS file");
+      if ($fscanf(inp_fh, "%d %h %h", inp_frame, inp_v1, inp_v2) == 3)
+        inp_pending = 1;
+    end
+  end
   hyprduel_sys #(.GFX_AW(GFX_AW), .P_PIXDIV(PIXDIV)) dut (
     .clk(clk), .rst_n(rst_n_sys),
     .o_hs(hs), .o_vs(vs), .o_de(de), .o_ce_pix(ce_pix),
     .o_hblank(), .o_vblank(),
     .o_r(r5), .o_g(g5), .o_b(b5),
     .o_audio(audio),
-    .i_p1p2(16'hFFFF), .i_system(16'hFFFF),
+    .i_p1p2(inp_p1p2), .i_system(inp_system),
     .i_dsw(16'hFFBF), .i_service(16'hFFFF),  // dsw bit6=0: demo sounds ON
     .o_mrom_rd(mrom_rd), .o_mrom_addr(mrom_addr),
     .i_mrom_data(mrom_data_mx), .i_mrom_valid(mrom_valid_mx),
@@ -119,7 +137,8 @@ module tb_system;
   // SDRAM controller + behavioral model (active when +SDRAM=1)
   logic [15:0] ctl_mrom_data;
   logic        ctl_mrom_valid;
-  logic [7:0]  ctl_oki_data, ctl_gfx_data;
+  logic [7:0]  ctl_oki_data;
+  logic [15:0] ctl_gfx_data;
   logic        ctl_oki_ok, ctl_gfx_valid;
   wire  [12:0] sdr_a;
   wire  [1:0]  sdr_ba;
@@ -206,9 +225,17 @@ module tb_system;
           srv_wait   <= 2;
         end
       end else if (srv_wait > 0) srv_wait <= srv_wait - 1;
-      else begin
+      else if (!srv_addr[0] && !srv_left[0]) begin
+        // word-mode: 2 bytes per valid, even byte in [15:8]
         rom_valid <= 1'b1;
-        rom_data  <= gfxrom[srv_addr];
+        rom_data  <= {gfxrom[srv_addr], gfxrom[srv_addr + 1]};
+        srv_addr  <= srv_addr + 2'd2;
+        if (srv_left == 7'd2) srv_active <= 1'b0;
+        else srv_left <= srv_left - 7'd2;
+      end else begin
+        // byte-mode (blitter): one byte per valid in [7:0]
+        rom_valid <= 1'b1;
+        rom_data  <= {8'd0, gfxrom[srv_addr]};
         srv_addr  <= srv_addr + 1'b1;
         if (srv_left == 7'd1) srv_active <= 1'b0;
         else srv_left <= srv_left - 7'd1;
@@ -248,6 +275,17 @@ module tb_system;
       subctl_events <= subctl_events + 1;
       $display("t=%0t subctl write: %02x (sub_in_reset=%0d) frame=%0d",
                $time, dbg_subctl, dbg_subrst, frames_seen);
+    end
+  end
+
+  // scripted-input playback (declarations near the dut instantiation)
+  always @(posedge clk) begin
+    if (inp_pending && frames_seen >= inp_frame) begin
+      inp_p1p2   <= inp_v1;
+      inp_system <= inp_v2;
+      $display("INPUT f=%0d p1p2=%04x system=%04x", frames_seen, inp_v1, inp_v2);
+      if ($fscanf(inp_fh, "%d %h %h", inp_frame, inp_v1, inp_v2) != 3)
+        inp_pending <= 0;
     end
   end
 
@@ -295,7 +333,7 @@ module tb_system;
       logic [23:0] wa;
       wa = {dut.m_a, 1'b0};
       if ((wa >= 24'h478800 && wa <= 24'h4788ff) ||
-          (wa >= 24'h470000 && wa <= 24'h47001f))
+          (wa >= 24'h479700 && wa <= 24'h47971f))
         $fwrite(raster_fh, "%0d,%0d,%0d,%06x,%04x\n",
                 frames_seen, dut.u_vdp.vcnt, dut.u_vdp.hcnt,
                 wa, dut.m_dout);
@@ -320,7 +358,7 @@ module tb_system;
   longint      oki_nz;
   int          oki_first;
   initial oki_first = -1;
-  int         rb_cyc, rb_max;
+  int         rb_cyc, rb_max, rb_over, rb_over_frame;
   int         st_flagA, st_flagB, st_busy;
   logic [7:0] st_last[16];         // last 16 status values returned
   int         st_lidx;
@@ -381,10 +419,14 @@ module tb_system;
     if (dut.s_iack && dut.s_a[3:1] == 3'd1) s_iack1_cnt <= s_iack1_cnt + 1;
     if (dut.s_iack && dut.s_a[3:1] == 3'd2) s_iack2_cnt <= s_iack2_cnt + 1;
     if (!dut.ym_irq_n) ymirq_seen <= ymirq_seen + 1;
-    // renderer line-budget probe
+    // renderer line-budget probe (budget = 424 * PIXDIV clocks per line)
     if (dut.u_vdp.rnd_busy) rb_cyc <= rb_cyc + 1;
     else begin
       if (rb_cyc > rb_max) rb_max <= rb_cyc;
+      if (rb_cyc > 424 * PIXDIV) begin
+        rb_over <= rb_over + 1;
+        rb_over_frame <= frames_seen;
+      end
       rb_cyc <= 0;
     end
   end
@@ -588,7 +630,8 @@ module tb_system;
              okiw_n, okir_n, oki_nz, oki_first);
     if (use_sdram != 0)
       $display("oki sdram: data_mismatches=%0d max_ok_latency=%0d", oki_mism, oki_maxlat);
-    $display("render: worst_line_cycles=%0d", rb_max);
+    $display("render: worst_line_cycles=%0d prescan_rejects=%0d over_budget_lines=%0d last_over_frame=%0d",
+             rb_max, dut.u_vdp.u_render.dbg_pst_rej, rb_over, rb_over_frame);
     for (int i = 0; i < okiw_n; i++)
       $display("  OKIW f=%0d val=%02x", okiw_log[i][23:8], okiw_log[i][7:0]);
     for (int i = 0; i < okir_n; i++)

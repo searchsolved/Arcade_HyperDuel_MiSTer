@@ -54,11 +54,13 @@ module i4220_vdp #(
     output logic o_irq,        // level: |(cause & ~enable) -> main IPL3
     output logic o_vbl_pulse,  // 1 sys clock at line 0 -> main IPL2
 
-    // GFX ROM master
+    // GFX ROM master. Stream data is WORD-mode for even-addr/even-len
+    // requests (renderer, CPU window): [15:8] = even byte, [7:0] = odd,
+    // two bytes per valid. Byte-mode (blitter, len 1): one byte in [7:0].
     output logic              o_rom_req,
     output logic [GFX_AW-1:0] o_rom_addr,
     output logic [6:0]        o_rom_len,
-    input  logic [7:0]        i_rom_data,
+    input  logic [15:0]       i_rom_data,
     input  logic              i_rom_valid,
     input  logic [23:0]       i_gfx_size,
 
@@ -164,6 +166,20 @@ module i4220_vdp #(
     .clk(clk),
     .addr_a(spr_buf_a_addr), .d_a(spr_buf_a_d), .we_a(spr_buf_a_we), .be_a(2'b11), .q_a(),
     .addr_b(rnd_spr_addr), .q_b(spr_buf_q)
+  );
+
+  // sprite prescan table: port A = vblank copy snoop write, port B =
+  // renderer read. One entry per sprite: {dis, y_end[10:0], y[9:0]}
+  logic [8:0]  pst_waddr;
+  logic [23:0] pst_wdata;
+  logic        pst_we;
+  logic        pst_valid;   // set once the first full copy refreshed the table
+  logic [8:0]  rnd_pst_addr;
+  logic [23:0] pst_rnd_q;
+  hd_dpram #(.AW(9), .DW(24), .NUMWORDS(512)) u_spr_pst (
+    .clk(clk),
+    .addr_a(pst_waddr), .d_a(pst_wdata), .we_a(pst_we), .be_a(3'b111), .q_a(),
+    .addr_b(rnd_pst_addr), .q_b(pst_rnd_q)
   );
 
   // linebuf: port A = renderer write, port B = scan-out read
@@ -307,6 +323,8 @@ module i4220_vdp #(
   i4220_render #(.GFX_AW(GFX_AW)) u_render (
     .clk(clk), .rst_n(rst_n),
     .i_start(rnd_start), .i_line(rnd_line),
+    .o_pst_addr(rnd_pst_addr), .i_pst_data(pst_rnd_q),
+    .i_pst_valid(pst_valid),
     .o_busy(rnd_busy), .o_done(rnd_done),
     .i_layer_pri(r_layer_pri),
     .i_bg_color(r_bg),
@@ -331,7 +349,13 @@ module i4220_vdp #(
   // slow (sprite-dense) lines borrow time from cheap neighbours and the
   // vblank gap, up to 3 lines of lookahead. Banks are line[1:0], display
   // reads bank vcnt[1:0], so lookahead <= 3 never collides.
-  logic [8:0] kick_fifo [0:3];
+  // Frame parity rides through the kick FIFO so completed lines can be
+  // tagged with the frame they belong to (scan-out blanking below).
+  // Toggled one line BEFORE line 0's kick is queued so the queue write
+  // at vcnt==V_TOTAL-1 sees the settled new value.
+  logic       frame_par;
+  logic       cur_par;       // parity of the line currently rendering
+  logic [9:0] kick_fifo [0:3];   // {par, line[8:0]}
   logic [1:0] kf_wr, kf_rd;
   logic [2:0] kf_cnt;
   always_ff @(posedge clk) begin
@@ -342,8 +366,11 @@ module i4220_vdp #(
       kf_wr <= '0;
       kf_rd <= '0;
       kf_cnt <= '0;
+      frame_par <= 1'b0;
     end else begin
       rnd_start <= 1'b0;
+      if (ce_pix && hcnt == 9'd0 && 32'(vcnt) == V_TOTAL - 2)
+        frame_par <= ~frame_par;
       // queue at the START of each line for the NEXT line: a full line of
       // render lead (banks are 2 bits, display is never within 1 of render)
       if (ce_pix && hcnt == 9'd0 && 32'(next_v) < V_VIS) begin
@@ -351,7 +378,7 @@ module i4220_vdp #(
           rnd_overrun <= 1'b1;                     // hopelessly behind
           o_dbg_ovr <= o_dbg_ovr + 16'd1;
         end else begin
-          kick_fifo[kf_wr] <= next_v;
+          kick_fifo[kf_wr] <= {frame_par, next_v};
           kf_wr <= kf_wr + 2'd1;
           kf_cnt <= kf_cnt + 3'd1;
         end
@@ -360,6 +387,7 @@ module i4220_vdp #(
         rnd_start <= 1'b1;
         rnd_line  <= kick_fifo[kf_rd][7:0];
         lb_bank   <= kick_fifo[kf_rd][1:0];
+        cur_par   <= kick_fifo[kf_rd][9];
         kf_rd <= kf_rd + 2'd1;
         kf_cnt <= kf_cnt - 3'd1;
       end
@@ -406,6 +434,93 @@ module i4220_vdp #(
   end
 
   // ------------------------------------------------------------------
+  // sprite prescan snoop: as sprite words stream through cp_q, compute
+  // each sprite's raw y extent (bit-identical ohv arithmetic to the
+  // renderer's ST_S_ZOOM/COVER stages, sprite words only - screen
+  // offsets are applied live in the renderer) and write one table entry
+  // per sprite. Entry k is written after words 4k..4k+3 have landed in
+  // spr_buf, so table and buffer stay consistent.
+  // ------------------------------------------------------------------
+  // sprite zoom table copy (spec sec 7.1), comb ROM
+  function automatic logic [11:0] ztab_of(input logic [5:0] z);
+    unique case (z)
+      6'd0:  ztab_of = 12'hAAC; 6'd1:  ztab_of = 12'h800;
+      6'd2:  ztab_of = 12'h668; 6'd3:  ztab_of = 12'h554;
+      6'd4:  ztab_of = 12'h494; 6'd5:  ztab_of = 12'h400;
+      6'd6:  ztab_of = 12'h390; 6'd7:  ztab_of = 12'h334;
+      6'd8:  ztab_of = 12'h2E8; 6'd9:  ztab_of = 12'h2AC;
+      6'd10: ztab_of = 12'h278; 6'd11: ztab_of = 12'h248;
+      6'd12: ztab_of = 12'h224; 6'd13: ztab_of = 12'h200;
+      6'd14: ztab_of = 12'h1E0; 6'd15: ztab_of = 12'h1C8;
+      6'd16: ztab_of = 12'h1B0; 6'd17: ztab_of = 12'h198;
+      6'd18: ztab_of = 12'h188; 6'd19: ztab_of = 12'h174;
+      6'd20: ztab_of = 12'h164; 6'd21: ztab_of = 12'h154;
+      6'd22: ztab_of = 12'h148; 6'd23: ztab_of = 12'h13C;
+      6'd24: ztab_of = 12'h130; 6'd25: ztab_of = 12'h124;
+      6'd26: ztab_of = 12'h11C; 6'd27: ztab_of = 12'h110;
+      6'd28: ztab_of = 12'h108; 6'd29: ztab_of = 12'h100;
+      6'd30: ztab_of = 12'h0F8; 6'd31: ztab_of = 12'h0F0;
+      6'd32: ztab_of = 12'h0EC; 6'd33: ztab_of = 12'h0E4;
+      6'd34: ztab_of = 12'h0DC; 6'd35: ztab_of = 12'h0D8;
+      6'd36: ztab_of = 12'h0D4; 6'd37: ztab_of = 12'h0CC;
+      6'd38: ztab_of = 12'h0C8; 6'd39: ztab_of = 12'h0C4;
+      6'd40: ztab_of = 12'h0C0; 6'd41: ztab_of = 12'h0BC;
+      6'd42: ztab_of = 12'h0B8; 6'd43: ztab_of = 12'h0B4;
+      6'd44: ztab_of = 12'h0B0; 6'd45: ztab_of = 12'h0AC;
+      6'd46: ztab_of = 12'h0A8; 6'd47: ztab_of = 12'h0A4;
+      6'd48: ztab_of = 12'h0A0; 6'd49: ztab_of = 12'h09C;
+      6'd50: ztab_of = 12'h098; 6'd51: ztab_of = 12'h094;
+      6'd52: ztab_of = 12'h090; 6'd53: ztab_of = 12'h08C;
+      6'd54: ztab_of = 12'h088; 6'd55: ztab_of = 12'h080;
+      6'd56: ztab_of = 12'h078; 6'd57: ztab_of = 12'h070;
+      6'd58: ztab_of = 12'h068; 6'd59: ztab_of = 12'h060;
+      6'd60: ztab_of = 12'h058; 6'd61: ztab_of = 12'h050;
+      6'd62: ztab_of = 12'h048; default: ztab_of = 12'h040;
+    endcase
+  endfunction
+
+  // cp_q holds word w = cp_cnt-2; sprite k's words w = 4k..4k+3.
+  // w%4==0 -> dis, w%4==1 -> y/zoom, w%4==2 -> h, w%4==3 -> multiply and
+  // arm the write; the write itself fires one cycle later (past cp_run
+  // for the last sprite, hence the registered strobe).
+  logic        ps_dis;
+  logic [9:0]  ps_y;
+  logic [11:0] ps_zoom;
+  logic [6:0]  ps_h;
+  logic [30:0] ps_ohf;
+  wire  [11:0] ps_w = cp_cnt - 12'd2;
+
+  always_ff @(posedge clk) begin
+    if (!rst_n) begin
+      pst_we    <= 1'b0;
+      pst_valid <= 1'b0;
+    end else begin
+      pst_we <= 1'b0;
+      if (cp_run && cp_cnt >= 12'd2) begin
+        unique case (ps_w[1:0])
+          2'd0: ps_dis <= (cp_q[15:11] == 5'h1F);
+          2'd1: begin
+            ps_y    <= cp_q[9:0];
+            ps_zoom <= ztab_of(cp_q[15:10]);
+          end
+          2'd2: ps_h <= (7'(cp_q[10:8]) + 7'd1) << 3;
+          default: begin
+            ps_ohf    <= 31'({ps_zoom, 8'd0}) * 31'(ps_h) + 31'h8000;
+            pst_we    <= 1'b1;
+            pst_waddr <= ps_w[10:2];
+          end
+        endcase
+      end
+      // renderer may use the table only once a full copy has refreshed it
+      if (pst_we && pst_waddr == 9'd511) pst_valid <= 1'b1;
+    end
+  end
+
+  // y_end = y + ohv; ohv <= 683 (max zoom x max height), so 11 bits hold it
+  assign pst_wdata = {2'b00, ps_dis,
+                      11'(ps_y) + 11'(ps_ohf[27:16]), ps_y};
+
+  // ------------------------------------------------------------------
   // blitter
   // ------------------------------------------------------------------
   logic        bl_start;
@@ -430,7 +545,7 @@ module i4220_vdp #(
     .o_vram_wdata(bl_wdata), .o_vram_wmask(bl_wmask),
     .o_busy(bl_busy), .o_done(blit_done)
   );
-  assign bl_rom_data = i_rom_data;
+  assign bl_rom_data = i_rom_data[7:0];   // blitter reads are byte-mode
 
   // ------------------------------------------------------------------
   // GFX ROM arbiter: renderer > CPU window > blitter
@@ -492,13 +607,16 @@ module i4220_vdp #(
         bp_addr <= bl_rom_addr;
       end
 
+      // gr_left counts VALID PULSES: word-mode requests (renderer, CPU
+      // window - always even addr/len) get len/2 pulses of 2 bytes each;
+      // the blitter's 1-byte reads get 1 pulse.
       if (gr == GR_NONE) begin
         if (rp_pend || rnd_rom_req) begin
           gr <= GR_RND;
           o_rom_req  <= 1'b1;
           o_rom_addr <= rnd_rom_req ? rnd_rom_addr : rp_addr;
           o_rom_len  <= rnd_rom_req ? rnd_rom_len : rp_len;
-          gr_left    <= rnd_rom_req ? rnd_rom_len : rp_len;
+          gr_left    <= (rnd_rom_req ? rnd_rom_len : rp_len) >> 1;
           rp_pend <= 1'b0;
         end else if (cp_pend || cpu_gfx_req) begin
           gr <= GR_CPU;
@@ -506,7 +624,7 @@ module i4220_vdp #(
           o_rom_addr <= cpu_gfx_req ? cpu_gfx_addr : cpw_addr;
           if (cpu_gfx_req) cpw_addr <= cpu_gfx_addr;
           o_rom_len  <= 7'd4;        // word + prefetch of the next word
-          gr_left    <= 7'd4;
+          gr_left    <= 7'd2;        // 2 word pulses
           cp_pend <= 1'b0;
           cpu_gfx_cnt <= 2'd0;
         end else if (bp_pend || (bl_rom_rd && !bl_rd_d)) begin
@@ -519,19 +637,14 @@ module i4220_vdp #(
         end
       end else if (i_rom_valid) begin
         if (gr == GR_CPU) begin
-          unique case (cpu_gfx_cnt)
-            2'd0: cpu_gfx_data[15:8] <= i_rom_data;
-            2'd1: begin
-              cpu_gfx_data[7:0] <= i_rom_data;
-              cpu_gfx_done <= 1'b1;
-            end
-            2'd2: cpu_pf_data[15:8] <= i_rom_data;
-            default: begin
-              cpu_pf_data[7:0] <= i_rom_data;
-              cpu_pf_tag   <= GFX_AW'(32'(cpw_addr) + 2);
-              cpu_pf_valid <= 1'b1;
-            end
-          endcase
+          if (cpu_gfx_cnt == 2'd0) begin
+            cpu_gfx_data <= i_rom_data;
+            cpu_gfx_done <= 1'b1;
+          end else begin
+            cpu_pf_data  <= i_rom_data;
+            cpu_pf_tag   <= GFX_AW'(32'(cpw_addr) + 2);
+            cpu_pf_valid <= 1'b1;
+          end
           cpu_gfx_cnt <= cpu_gfx_cnt + 2'd1;
         end
         if (gr_left == 7'd1) gr <= GR_NONE;
@@ -795,6 +908,31 @@ module i4220_vdp #(
   // ------------------------------------------------------------------
   // scan-out: linebuf -> palette -> GRB555 decode (2 ce_pix pipeline)
   // ------------------------------------------------------------------
+  // Scan-out blanking: each linebuffer bank is tagged with {frame parity,
+  // line} when the renderer COMPLETES a line into it. The beam shows a
+  // line only if its bank holds this frame's copy of this line; otherwise
+  // the background pen is substituted. Per-bank tags are immune to renders
+  // that straddle the frame boundary (a late tail line only blanks itself,
+  // as does a dropped kick - no frame-wide counter to poison). Read-side
+  // only - no logic is added to the linebuffer write path.
+  logic [8:0] bank_tag [0:3];   // {par, line[7:0]} last completed per bank
+  logic       so_stale;
+  always_ff @(posedge clk) begin
+    if (!rst_n) begin
+      // init to line 255: matches no visible vcnt, so everything blanks
+      // until the renderer has actually delivered a line
+      bank_tag[0] <= 9'h1FF;
+      bank_tag[1] <= 9'h1FF;
+      bank_tag[2] <= 9'h1FF;
+      bank_tag[3] <= 9'h1FF;
+      so_stale <= 1'b1;
+    end else begin
+      if (rnd_done)
+        bank_tag[rnd_line[1:0]] <= {cur_par, rnd_line};
+      so_stale <= (bank_tag[vcnt[1:0]] != {frame_par, vcnt[7:0]});
+    end
+  end
+
   // so_pen declared at u_palette instantiation
   logic [15:0] so_pal;
   logic        de0, de1;
@@ -806,7 +944,9 @@ module i4220_vdp #(
       de0 <= (32'(hcnt) < H_VIS) && (32'(vcnt) < V_VIS);
       hb0 <= !(32'(hcnt) < H_VIS);
       vb0 <= !(32'(vcnt) < V_VIS);
-      so_pen <= (32'(hcnt) < H_VIS) ? lb_rq : 12'd0;
+      so_pen <= (32'(hcnt) >= H_VIS) ? 12'd0
+              : so_stale              ? r_bg
+              :                         lb_rq;
       // stage 1: palette lookup
       de1 <= de0;
       hb1 <= hb0;

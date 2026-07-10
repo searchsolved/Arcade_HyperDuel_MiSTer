@@ -44,7 +44,7 @@ module tb_vdp;
   logic              rom_req;
   logic [GFX_AW-1:0] rom_addr;
   logic [6:0]        rom_len;
-  logic [7:0]        rom_data;
+  logic [15:0]       rom_data;
   logic              rom_valid;
 
   // P_PIXDIV 32 gives the renderer sim headroom; closing real-time at the
@@ -66,7 +66,7 @@ module tb_vdp;
     .i_gfx_size(24'(gfx_size)),
     /* verilator lint_off PINCONNECTEMPTY */
     .o_dbg_vdp_write(), .o_dbg_line_start(),
-    .o_dbg_rnd_done(), .o_dbg_lb_nonzero(), .o_dbg_palw()
+    .o_dbg_rnd_done(), .o_dbg_lb_nonzero(), .o_dbg_palw(), .o_dbg_ovr()
     /* verilator lint_on PINCONNECTEMPTY */
   );
 
@@ -91,9 +91,21 @@ module tb_vdp;
         end
       end else if (srv_wait > 0) begin
         srv_wait <= srv_wait - 1;
-      end else begin
+      end else if (!srv_addr[0] && !srv_left[0]) begin
+        // word-mode request (renderer / CPU window): 2 bytes per valid,
+        // even byte in [15:8]
         rom_valid <= 1'b1;
-        rom_data  <= gfxrom[srv_addr];
+        rom_data  <= {gfxrom[srv_addr], gfxrom[srv_addr + 1]};
+        srv_addr  <= srv_addr + 22'd2;
+        if (srv_left == 7'd2) srv_active <= 1'b0;
+        else begin
+          srv_left <= srv_left - 7'd2;
+          if (srv_addr[3:0] == 4'd4) srv_wait <= 2;
+        end
+      end else begin
+        // byte-mode request (blitter): one byte per valid in [7:0]
+        rom_valid <= 1'b1;
+        rom_data  <= {8'd0, gfxrom[srv_addr]};
         srv_addr  <= srv_addr + 1'b1;
         if (srv_left == 7'd1) srv_active <= 1'b0;
         else begin

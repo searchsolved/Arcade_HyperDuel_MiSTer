@@ -47,11 +47,12 @@ module tb_render;
   logic              rom_req;
   logic [GFX_AW-1:0] rom_addr;
   logic [6:0]        rom_len;
-  logic [7:0]        rom_data;
+  logic [15:0]       rom_data;
   logic              rom_valid;
   logic        lb_we;
   logic [8:0]  lb_x;
   logic [11:0] lb_pen;
+  logic [8:0]  pst_addr;   // prescan port unused: table absent, valid tied 0
 
   i4220_render #(.GFX_AW(GFX_AW)) dut (
     .clk(clk), .rst_n(rst_n),
@@ -69,6 +70,7 @@ module tb_render;
     .o_vram_addr(vram_addr16), .i_vram_data(vram_q),
     .o_tt_addr(tt_addr), .i_tt_data(tt_q),
     .o_spr_addr(spr_addr), .i_spr_data(spr_q),
+    .o_pst_addr(pst_addr), .i_pst_data(24'd0), .i_pst_valid(1'b0),
     .o_rom_req(rom_req), .o_rom_addr(rom_addr), .o_rom_len(rom_len),
     .i_rom_data(rom_data), .i_rom_valid(rom_valid),
     .o_lb_we(lb_we), .o_lb_x(lb_x), .o_lb_pen(lb_pen)
@@ -117,13 +119,14 @@ module tb_render;
         if (srv_wait > 0) begin
           srv_wait <= srv_wait - 1;
         end else begin
+          // word-mode stream: two bytes per valid, even byte in [15:8]
           rom_valid <= 1'b1;
-          rom_data  <= gfxrom[srv_addr];
-          srv_addr  <= srv_addr + 1'b1;
-          if (srv_left == 7'd1) srv_active <= 1'b0;
+          rom_data  <= {gfxrom[srv_addr], gfxrom[srv_addr + 1]};
+          srv_addr  <= srv_addr + 22'd2;
+          if (srv_left == 7'd2) srv_active <= 1'b0;
           else begin
-            srv_left <= srv_left - 7'd1;
-            if (srv_addr[2:0] == 3'd4) srv_wait <= 2;  // mid-stream gap
+            srv_left <= srv_left - 7'd2;
+            if (srv_addr[3:0] == 4'd4) srv_wait <= 2;  // mid-stream gap
           end
         end
       end

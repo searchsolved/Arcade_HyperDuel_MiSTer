@@ -54,7 +54,7 @@ module hyprduel_sys #(
     output logic              o_rom_req,
     output logic [GFX_AW-1:0] o_rom_addr,
     output logic [6:0]        o_rom_len,
-    input  logic [7:0]        i_rom_data,
+    input  logic [15:0]       i_rom_data,   // word-mode stream (see sdram)
     input  logic              i_rom_valid,
     input  logic [23:0]       i_gfx_size,
 

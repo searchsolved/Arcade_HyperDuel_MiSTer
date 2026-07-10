@@ -16,8 +16,9 @@
 // i_rom_valid pulses (not necessarily consecutive). No new request before
 // the previous stream completes.
 //
-// Line accumulators are packed into two SDP BRAMs (lay_mem 15-bit,
-// spr_mem 20-bit) with one-ahead prefetch addressing.
+// Line accumulators are packed into two SDP BRAMs (lay_mem 15-bit per
+// pixel, spr_mem 40-bit per pixel PAIR - the sprite emit loop retires
+// two pixels per cycle) with one-ahead prefetch addressing.
 
 module i4220_render #(
     parameter int GFX_AW = 22
@@ -60,11 +61,20 @@ module i4220_render #(
     output logic [10:0] o_spr_addr,
     input  logic [15:0] i_spr_data,
 
-    // GFX ROM stream port
+    // sprite prescan table read port (written by the vblank copy engine):
+    // [9:0] = sprite y (raw sw1[9:0]), [20:10] = y + out_h, [21] = disabled
+    output logic [8:0]  o_pst_addr,
+    input  logic [23:0] i_pst_data,
+    input  logic        i_pst_valid,
+
+    // GFX ROM stream port. All renderer requests are even-addr/even-len
+    // (tile rows and sprite rows both start even with even byte counts),
+    // so the stream is WORD-mode: each valid pulse carries two bytes,
+    // [15:8] = even (lower) address, [7:0] = odd.
     output logic              o_rom_req,
     output logic [GFX_AW-1:0] o_rom_addr,
-    output logic [6:0]        o_rom_len,   // 1..64 bytes
-    input  logic [7:0]        i_rom_data,
+    output logic [6:0]        o_rom_len,   // 2..64 bytes, always even
+    input  logic [15:0]       i_rom_data,
     input  logic              i_rom_valid,
 
     // line buffer write (final pen per pixel)
@@ -99,14 +109,16 @@ module i4220_render #(
   // line accumulators: packed into two SDP BRAMs
   // lay_mem: {valid, pri[1:0], pen[11:0]}
   logic [14:0] lay_mem [0:511];
-  // spr_mem: {taken, group[4:0], prival[1:0], pen[11:0]}
-  logic [19:0] spr_mem [0:511];
+  // spr_mem: two screen pixels per word so the sprite emit loop can
+  // retire 2 pixels/cycle. Each 20-bit half: {taken, group[4:0],
+  // prival[1:0], pen[11:0]}; low half = even x, high half = odd x.
+  logic [39:0] spr_mem [0:255];
 
-  logic [14:0] lay_q;      logic [19:0] spr_q;
+  logic [14:0] lay_q;      logic [39:0] spr_q;
   logic        lay_we;     logic        spr_we;
-  logic [8:0]  lay_waddr;  logic [8:0]  spr_waddr;
-  logic [14:0] lay_wdata;  logic [19:0] spr_wdata;
-  logic [8:0]  lay_raddr;  logic [8:0]  spr_raddr;
+  logic [8:0]  lay_waddr;  logic [7:0]  spr_waddr;
+  logic [14:0] lay_wdata;  logic [39:0] spr_wdata;
+  logic [8:0]  lay_raddr;  logic [7:0]  spr_raddr;
 
   always_ff @(posedge clk) begin
     lay_q <= lay_mem[lay_raddr];
@@ -126,7 +138,7 @@ module i4220_render #(
     ST_L_GRCV,
     ST_S_RD0, ST_S_RD1, ST_S_RD2, ST_S_RD3, ST_S_RD4,
     ST_S_ZOOM, ST_S_COVER, ST_S_COVER2, ST_S_DIV, ST_S_GREQ, ST_S_GMUL, ST_S_GISS, ST_S_GRCV,
-    ST_S_PRIME, ST_S_PRIM2, ST_S_EMIT,
+    ST_S_PRIME, ST_S_PRIM2, ST_S_PRIM3, ST_S_EMIT,
     ST_L_TT3B,
     ST_RESOLVE
   } st_e;
@@ -172,14 +184,43 @@ module i4220_render #(
   logic [35:0] yidx_q;             // pipelined zoom-scaled row index
   logic [30:0] ohf_q, owf_q;       // COVER -> COVER2 registered size products
   logic [25:0] ext_q;              // registered ROM extent (bounds check)
+  logic [8:0]  sxl, sxh;           // clipped screen span [sxl, sxh)
+  logic [7:0]  wcur, w_end;        // pair-word walk bounds (screen x / 2)
   logic [11:0] s_xs;               // pixel-index multiplier input (v or W-1-v)
-  logic [35:0] s_xi;               // running product xs*dx; steps by +-dx per pixel
-  wire  [11:0] s_pixidx = s_xi[27:16];   // current sprite pixel index
+  // running products xs*dx for the even/odd pixel of the current pair;
+  // both step by +-2*dx per emitted word (exact by linearity, incl. the
+  // wrapped value tracked for a clip-disabled leading half)
+  logic [35:0] s_xi0, s_xi1;
+  wire  [11:0] s_pix0 = s_xi0[27:16];
+  wire  [11:0] s_pix1 = s_xi1[27:16];
   logic        s_bpp8;
   logic [1:0]  s_prival;
   logic [4:0]  s_group;
   logic [7:0]  srowcache [0:63];
   logic [5:0]  rx2;
+
+  // texel fetch from the sprite row cache (combinational, used twice per
+  // emit cycle - one per pair half)
+  function automatic logic [7:0] stexel_of(input logic [11:0] pix);
+    if (s_bpp8) stexel_of = srowcache[pix[5:0]];
+    else stexel_of = pix[0] ? {4'd0, srowcache[pix[6:1]][7:4]}
+                            : {4'd0, srowcache[pix[6:1]][3:0]};
+  endfunction
+
+  // sprite prescan check: the vblank copy engine precomputes each sprite's
+  // raw y extent (same ohv arithmetic as ST_S_COVER/COVER2, sprite words
+  // only); screen offsets are applied live here so register writes between
+  // copy and render cannot desync the check. A prescan reject implies the
+  // full COVER2 coverage test would reject too (strict subset); accepted
+  // sprites still run the full test, so a false accept only costs cycles.
+  logic signed [17:0] lline_adj;   // line_r + spr_yoff - (screen_yoff + 1)
+  always_ff @(posedge clk)
+    lline_adj <= $signed({10'd0, line_r}) + $signed({2'd0, i_spr_yoff})
+               - $signed({2'd0, i_screen_yoff}) - 18'sd1;
+  wire signed [17:0] pst_y    = $signed({8'd0, i_pst_data[9:0]});
+  wire signed [17:0] pst_yend = $signed({7'd0, i_pst_data[20:10]});
+  wire pst_reject = i_pst_valid &&
+                    (i_pst_data[21] || lline_adj < pst_y || lline_adj >= pst_yend);
 
   // serial divider (shared, phase 0 = dy, 1 = dx)
   logic        div_phase;
@@ -255,9 +296,10 @@ module i4220_render #(
   end
 
   // Sprite pixel index: pixidx(v) = ((flipX ? out_w-1-v : v) * dx) >> 16.
-  // Computed once per sprite with a registered-input multiply (PRIME/PRIM2),
-  // then advanced by +-dx per emitted pixel (exact by linearity of the
-  // product in v) so the emit loop carries only a 36-bit add.
+  // Seeded once per sprite with a registered-input multiply (PRIME/PRIM2,
+  // odd half derived in PRIM3), then advanced by +-2*dx per emitted pair
+  // word (exact by linearity of the product in v) so the emit loop
+  // carries only 36-bit adds.
 
   // divider next-step values (combinational)
   wire [23:0] div_rem_sh = {div_rem[22:0], div_num[23]};
@@ -274,14 +316,15 @@ module i4220_render #(
 
   always_comb begin
     lay_raddr = xtrack;
-    spr_raddr = (st == ST_S_EMIT) ? 9'(sx0 + xo + 1)
-              : (st == ST_S_PRIME || st == ST_S_PRIM2) ? 9'(sx0 + xo)
+    spr_raddr = (st == ST_S_EMIT) ? (wcur + 8'd1)
+              : (st == ST_S_PRIME || st == ST_S_PRIM2 || st == ST_S_PRIM3)
+                ? wcur
               : (st == ST_S_RD1 || st == ST_S_RD2 || st == ST_S_RD3 ||
                  st == ST_S_RD4 || st == ST_S_ZOOM || st == ST_S_COVER ||
                  st == ST_S_COVER2 ||
                  st == ST_S_DIV || st == ST_S_GREQ || st == ST_S_GRCV)
-                ? ((sx0 < 0) ? 9'd0 : 9'(sx0))
-              : xtrack;
+                ? 8'(((sx0 < 0) ? 9'd0 : 9'(sx0)) >> 1)
+              : 8'(xtrack >> 1);
   end
 
   // ------------------------------------------------------------------
@@ -319,7 +362,7 @@ module i4220_render #(
 
         ST_CLR: begin
           lay_we <= 1'b1;  lay_waddr <= xcur;  lay_wdata <= '0;
-          spr_we <= 1'b1;  spr_waddr <= xcur;  spr_wdata <= '0;
+          spr_we <= 1'b1;  spr_waddr <= 8'(xcur >> 1);  spr_wdata <= '0;
           if (xcur == 9'(WIDTH - 1)) begin
             xcur  <= 9'd0;
             did_init <= 1'b1;
@@ -451,9 +494,10 @@ module i4220_render #(
 
         ST_L_GRCV: begin
           if (i_rom_valid) begin
-            rowcache[rx[3:0]] <= i_rom_data;
-            if ({2'd0, rx} == o_rom_len - 7'd1) st <= ST_L_PIX;
-            else rx <= rx + 5'd1;
+            rowcache[rx[3:0]]          <= i_rom_data[15:8];
+            rowcache[{rx[3:1], 1'b1}]  <= i_rom_data[7:0];
+            if ({2'd0, rx} == o_rom_len - 7'd2) st <= ST_L_PIX;
+            else rx <= rx + 5'd2;
           end
         end
 
@@ -463,6 +507,8 @@ module i4220_render #(
           else begin
             o_spr_addr <= {(lp_dis ? scur[8:0]
                                    : (scount[8:0] - 9'd1 - scur[8:0])), 2'd0};
+            o_pst_addr <= lp_dis ? scur[8:0]
+                                 : (scount[8:0] - 9'd1 - scur[8:0]);
             st <= ST_S_RD1;
           end
         end
@@ -475,7 +521,8 @@ module i4220_render #(
         ST_S_RD2: begin
           sw0 <= i_spr_data;
           o_spr_addr <= {o_spr_addr[10:2], 2'd2};
-          if (i_spr_data[15:11] == 5'h1F) begin        // disabled: skip
+          // disabled, or prescan says the sprite cannot touch this line
+          if (i_spr_data[15:11] == 5'h1F || pst_reject) begin
             scur <= scur + 10'd1;
             st <= ST_S_RD0;
           end else
@@ -616,65 +663,96 @@ module i4220_render #(
 
         ST_S_GRCV: begin
           if (i_rom_valid) begin
-            srowcache[rx2] <= i_rom_data;
-            if ({1'd0, rx2} == o_rom_len - 7'd1) begin
+            srowcache[rx2]              <= i_rom_data[15:8];
+            srowcache[{rx2[5:1], 1'b1}] <= i_rom_data[7:0];
+            if ({1'd0, rx2} == o_rom_len - 7'd2) begin
               xo     <= (sx0 < 0) ? -sx0 : 0;
               xo_end <= (sx0 + int'(out_w) > WIDTH) ? (WIDTH - sx0)
                                                     : int'(out_w);
+              sxl    <= (sx0 < 0) ? 9'd0 : 9'(sx0);
+              sxh    <= (sx0 + int'(out_w) > WIDTH) ? 9'(WIDTH)
+                                                    : 9'(sx0 + int'(out_w));
+              wcur   <= 8'(((sx0 < 0) ? 9'd0 : 9'(sx0)) >> 1);
               st <= ST_S_PRIME;
             end else
-              rx2 <= rx2 + 6'd1;
+              rx2 <= rx2 + 6'd2;
           end
         end
 
         ST_S_PRIME: begin
-          // stage 1: resolve the flip-adjusted start index (subtract only)
+          // stage 1: resolve the flip-adjusted start index of the clipped
+          // start pixel (always >= 0, as in the 1-pixel-per-cycle design)
           s_xs <= 12'(sattr[15] ? (int'(out_w) - 1 - xo) : xo);
+          w_end <= 8'((sxh - 9'd1) >> 1);
           st <= ST_S_PRIM2;
         end
 
         ST_S_PRIM2: begin
-          // stage 2: one registered-input multiply seeds the accumulator
-          s_xi <= 36'(s_xs) * 36'(dx_q);
+          // stage 2: one registered-input multiply seeds the half the
+          // start pixel lands in (even or odd screen x)
+          if (sxl[0]) s_xi1 <= 36'(s_xs) * 36'(dx_q);
+          else        s_xi0 <= 36'(s_xs) * 36'(dx_q);
+          st <= ST_S_PRIM3;
+        end
+
+        ST_S_PRIM3: begin
+          // stage 3: derive the other half one source step away. For an
+          // odd start the even half is the (write-disabled) pixel to the
+          // LEFT: one step backwards, exact modulo 2^36.
+          if (sxl[0]) s_xi0 <= sattr[15] ? (s_xi1 + 36'(dx_q))
+                                         : (s_xi1 - 36'(dx_q));
+          else        s_xi1 <= sattr[15] ? (s_xi0 - 36'(dx_q))
+                                         : (s_xi0 + 36'(dx_q));
           st <= ST_S_EMIT;
         end
 
         ST_S_EMIT: begin
-          if (xo >= xo_end) begin
+          // one pair word per cycle: two texels, two priority tests, one
+          // read-modify-write against the prefetched old word (spr_q)
+          logic [7:0]  t0, t1;
+          logic        op0, op1, we0, we1;
+          logic [19:0] n0, n1;
+          t0 = stexel_of(s_pix0);
+          t1 = stexel_of(s_pix1);
+          op0 = s_bpp8 ? (t0 != 8'hFF) : (t0[3:0] != 4'hF);
+          op1 = s_bpp8 ? (t1 != 8'hFF) : (t1[3:0] != 4'hF);
+          we0 = ({wcur, 1'b0} >= sxl) && op0 &&
+                (!spr_q[19] || s_group < spr_q[18:14]);
+          we1 = ({wcur, 1'b1} < sxh) && op1 &&
+                (!spr_q[39] || s_group < spr_q[38:34]);
+          n0 = {1'b1, s_group, s_prival,
+                spr_palbase | (s_bpp8 ? 12'(t0)
+                             : ({4'd0, sattr[7:4], 4'd0} | 12'(t0)))};
+          n1 = {1'b1, s_group, s_prival,
+                spr_palbase | (s_bpp8 ? 12'(t1)
+                             : ({4'd0, sattr[7:4], 4'd0} | 12'(t1)))};
+          if (we0 || we1) begin
+            spr_we    <= 1'b1;
+            spr_waddr <= wcur;
+            spr_wdata <= {we1 ? n1 : spr_q[39:20], we0 ? n0 : spr_q[19:0]};
+          end
+          s_xi0 <= sattr[15] ? (s_xi0 - {11'd0, dx_q, 1'b0})
+                             : (s_xi0 + {11'd0, dx_q, 1'b0});
+          s_xi1 <= sattr[15] ? (s_xi1 - {11'd0, dx_q, 1'b0})
+                             : (s_xi1 + {11'd0, dx_q, 1'b0});
+          if (wcur == w_end) begin
             scur <= scur + 10'd1;
             st <= ST_S_RD0;
-          end else begin
-            logic [7:0] texel;
-            logic [8:0] xscr;
-            if (s_bpp8) texel = srowcache[s_pixidx[5:0]];
-            else texel = s_pixidx[0] ? {4'd0, srowcache[s_pixidx[6:1]][7:4]}
-                                     : {4'd0, srowcache[s_pixidx[6:1]][3:0]};
-            xscr = 9'(sx0 + xo);
-            if ((s_bpp8 && texel != 8'hFF) ||
-                (!s_bpp8 && texel[3:0] != 4'hF)) begin
-              if (!spr_q[19] || s_group < spr_q[18:14]) begin
-                spr_we    <= 1'b1;
-                spr_waddr <= xscr;
-                spr_wdata <= {1'b1, s_group, s_prival,
-                              spr_palbase
-                    | (s_bpp8 ? 12'(texel)
-                              : ({4'd0, sattr[7:4], 4'd0} | 12'(texel)))};
-              end
-            end
-            s_xi <= sattr[15] ? (s_xi - 36'(dx_q)) : (s_xi + 36'(dx_q));
-            xo <= xo + 1;
-          end
+          end else
+            wcur <= wcur + 8'd1;
         end
 
         // ---------------- resolve ----------------
         ST_RESOLVE: begin
           logic [1:0] laycode;
           logic [11:0] pen;
+          logic [19:0] sp;
+          sp = xcur[0] ? spr_q[39:20] : spr_q[19:0];   // pair half select
           if (blank) pen = i_bg_color;
           else begin
             laycode = lay_q[14] ? (2'd3 - lay_q[13:12]) : 2'd0;
-            if (spr_q[19] && laycode <= spr_q[13:12])
-              pen = spr_q[11:0];
+            if (sp[19] && laycode <= sp[13:12])
+              pen = sp[11:0];
             else if (lay_q[14])
               pen = lay_q[11:0];
             else
@@ -684,7 +762,8 @@ module i4220_render #(
           o_lb_x   <= xcur;
           o_lb_pen <= pen;
           lay_we <= 1'b1;  lay_waddr <= xcur;  lay_wdata <= '0;
-          spr_we <= 1'b1;  spr_waddr <= xcur;  spr_wdata <= '0;
+          // clear the pair word once both halves have been consumed
+          spr_we <= xcur[0];  spr_waddr <= 8'(xcur >> 1);  spr_wdata <= '0;
           if (xcur == 9'(WIDTH - 1)) begin
             o_done <= 1'b1;
             o_busy <= 1'b0;
@@ -699,6 +778,13 @@ module i4220_render #(
   end
 
 `ifdef VERILATOR
+  // prescan effectiveness counter (read hierarchically by tb_system)
+  logic [31:0] dbg_pst_rej;
+  always_ff @(posedge clk) begin
+    if (!rst_n) dbg_pst_rej <= '0;
+    else if (st == ST_S_RD2 && pst_reject) dbg_pst_rej <= dbg_pst_rej + 1;
+  end
+
   // cycle trace of the sprite attribute read handshake (debug only)
   always_ff @(posedge clk) begin
     if ($test$plusargs("SPRTRC") && line_r == 8'd100 && scur < 10'd2 &&
