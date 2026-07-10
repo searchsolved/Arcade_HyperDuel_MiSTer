@@ -92,3 +92,15 @@ sim/build/mame/refaudio/hyprduel_boot45s.wav, regenerate with:
 48kHz mono, onset 17.67s (matches the documented 17.6s first note),
 jingle 16-24s, demo music from 28s. Compare onset-aligned (our boot is
 faster than MAME's); sim rate is 80MHz/2048 = 39062.5Hz - resample.
+
+R2 AUDIO COMPARISON RUN 2026-07-10 (offline, vs fresh MAME reference):
+envelope/timing PASS - 14s onset-aligned, note structure and a 5.5s
+silent gap match at 0.5s resolution. LEVELS: sim = 0.81x MAME overall;
+YM-dominated blocks 0.89-0.96, OKI-heavy blocks 0.70-0.79. Action for
+R2: retune mix gains in hyprduel_sys (roughly YM x1.05, OKI x1.35 from
+current 1.20/457 - the July 5 calibration was done against the
+pre-arbiter-fix tree with corrupted OKI phrase reads). Verify by
+rerunning this comparison (build/audio_current_1600.raw vs
+build/mame/refaudio/hyprduel_boot45s.wav, resample 39062.5->48k,
+onset-align) then by ear on the CRT. Do NOT stack into the pending
+deploy build.
