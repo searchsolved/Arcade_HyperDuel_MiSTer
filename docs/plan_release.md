@@ -117,3 +117,14 @@ No other game is MRA-only; each tier is RTL work:
    RESEARCH: survey for a 7810 core before promising any of these.
    Announce I4220 reusability in the hyprduel release notes to attract
    collaborators.
+
+## Known deviation to document in README (added 2026-07-11)
+
+Top ~4 visible lines: parallax offset is one frame stale. The game
+writes per-line scroll just-in-time at each hblank; the renderer (like
+the real line-buffered I4220) draws one line ahead of the beam, so the
+first lines of each frame use vblank-parked values. Authenticity
+UNDETERMINED - the real chip likely behaved identically (same lead) and
+arcade bezels hid these lines; resolve via real-PCB footage if ever.
+Do NOT "fix" without a reference. MiSTer vertical crop reproduces the
+cabinet presentation.
