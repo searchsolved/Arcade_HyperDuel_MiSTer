@@ -104,3 +104,16 @@ rerunning this comparison (build/audio_current_1600.raw vs
 build/mame/refaudio/hyprduel_boot45s.wav, resample 39062.5->48k,
 onset-align) then by ear on the CRT. Do NOT stack into the pending
 deploy build.
+
+## Family roadmap (added 2026-07-11)
+
+No other game is MRA-only; each tier is RTL work:
+1. magerror (same TEC442-A board): VDP at 0x800000, different int-enable
+   wiring, YM2413 for YM2151 (jt2413 exists - integration not invention).
+   One-two sessions + bring-up. v1.1 candidate.
+2. Metro-family (metro.cpp: Blazing Tornado, Toride II, Mouja, ...):
+   i4100/i4220/i4300 VDP reuse is the done 80%, but boards use a single
+   68000 + uPD7810 sound MCU - no known RTL uPD7810 exists. GATING
+   RESEARCH: survey for a 7810 core before promising any of these.
+   Announce I4220 reusability in the hyprduel release notes to attract
+   collaborators.
