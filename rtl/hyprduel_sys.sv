@@ -217,7 +217,12 @@ module hyprduel_sys #(
   // ------------------------------------------------------------------
   // OKI M6295 (jt6295) at sub 0x400004-0x400005, samples from oki_rom
   // ------------------------------------------------------------------
-  localparam int P_OKIDIV = (P_PIXDIV * 3232) / 1000;  // ~2.0625 MHz
+  // Real-board OKI clock = 4 MHz OSC / 2 = 2.000 MHz, measured from the
+  // PCB 1cc video: announcer-voice pitch ratio 1.0532 against our
+  // previous 2.105 MHz divider => 1.999 MHz on hardware. MAME's
+  // 2.0625 MHz is ~3% sharp and flagged unverified in their own source.
+  // clk = P_PIXDIV*20/3 MHz, so 2 MHz = P_PIXDIV*10/3 (exact 40 at 12).
+  localparam int P_OKIDIV = (P_PIXDIV * 10) / 3;
   logic [$clog2(P_OKIDIV)-1:0] okidiv;
   wire oki_cen = (32'(okidiv) == 0);
   always_ff @(posedge clk)
@@ -235,9 +240,12 @@ module hyprduel_sys #(
     .sound(oki_snd), .sample()
   );
 
-  // mono mix, matched to MAME's measured stream levels (2026-07-05
-  // split-capture calibration): YM x1.20, OKI x0.57 after the 14->16
-  // bit scale. 26-bit intermediates: the old 18-bit ones WRAPPED for
+  // mono mix. YM level keeps the 2026-07-05 MAME stream calibration
+  // (x1.20); the OKI level is calibrated against REAL HARDWARE (PCB 1cc
+  // video line capture, 2026-07-11): title-voice peak vs title-music
+  // RMS measured 2.20 on the PCB against 5.13 with the old x457 gain,
+  // so OKI drops by 2.33x. MAME's 0.57 route gain is ~3x hot vs the
+  // real board. 26-bit intermediates: the old 18-bit ones WRAPPED for
   // any sample above ~640, mangling the output (docs/qa_checklist.md).
   logic signed [15:0] ym_xl, ym_xr;
   always_comb begin
@@ -245,8 +253,7 @@ module hyprduel_sys #(
     ymm  = (26'(ym_xl) + 26'(ym_xr)) >>> 1;
     ymm  = (ymm * 26'sd307) >>> 8;              // x1.20
     okim = (26'(oki_snd) <<< 2);
-    okim = (okim * 26'sd457) >>> 8;             // x1.79 (calibrated:
-    // jt6295's scale sits ~2 bits under MAME's okim6295 stream)
+    okim = (okim * 26'sd196) >>> 8;             // x0.77 (PCB-calibrated)
     mix  = ymm + okim;
     if (mix > 26'sd32767)       o_audio = 16'sd32767;
     else if (mix < -26'sd32768) o_audio = -16'sd32768;

@@ -66,27 +66,55 @@ Our core services all of them. We believe real silicon does not skip
 its own interrupts, and the PCB footage shows smooth parallax. We do
 NOT calibrate write timing against MAME here, deliberately.
 
-### 3.2 Open: audio balance and OKI pitch
+### 3.2 Resolved: OKI clock (measured); balance calibrated (one refinement open)
 
-- Mix levels were calibrated against MAME captures (YM RMS matched on
-  a reference jingle). Final balance will be calibrated against the
-  PCB video audio. Retune targets are documented in the release plan.
-- MAME's own source flags the OKI M6295 clock as unverified
-  ("clock frequency & pin 7 not verified"). Our OKI timing therefore
-  inherits an unverified value. The PCB video is the pitch reference
-  for final calibration.
+- **OKI clock = 2.000 MHz, measured from real hardware (2026-07-11).**
+  Method: the title-screen announcer sample is identical ROM bytes on
+  the real board and in this core, so its pitch ratio equals the clock
+  ratio. Log-spectral alignment of the sample from the PCB 1cc capture
+  against our capture gave ratio 1.0532 vs our then divider
+  (80/38 = 2.1053 MHz), i.e. 1.9993 MHz on hardware: exactly the
+  photo-verified 4 MHz OSC divided by 2. After fixing the divider to
+  80/40 the re-measured ratio is 1.0000 (spectral corr 0.905).
+  MAME's 2.0625 MHz (flagged "not verified" in their source) is
+  therefore measurably ~3.1% sharp; sample rate is 15,151.5 Hz.
+- **Sample/music balance calibrated to the PCB line capture**: voice
+  peak / music RMS = 2.20 on hardware; our OKI mix gain was reduced
+  accordingly (457 -> 196 in the 8.8 fixed-point mixer). One
+  refinement open: the two recordings' attract cycles never fully
+  aligned, so the anchor windows are close but not identical music
+  passages; a matched-tune re-measure is planned. MAME's 0.57 OKI
+  route gain is ~3x hot against the hardware capture.
+- YM level keeps the MAME stream calibration (x1.20); YM clocking is
+  crystal-verified.
 
-### 3.3 Open: top-of-frame raster phase (lines 0-3)
+### 3.3 Open: top-of-frame raster phase (lines 0-3), now fully characterised
 
-Our renderer runs one line ahead of scan-out; the game writes per-line
-scroll values just in time. The first few lines of a frame can render
-with vblank-parked scroll values, visible as a subtle parallax offset
-in the top 4 lines during raster-heavy scenes. Whether real hardware
-shows the same is UNDETERMINED: on the PCB capture the HUD covers
-those lines during gameplay, and arcade bezels typically hid them.
-Resolution needs attract-mode PCB footage. We will not "fix" this
-without hardware evidence, since the fix could equally introduce a
-deviation.
+Write-log analysis (2026-07-11) established exactly what the game
+does: during demo scenes it runs a per-line VERTICAL scroll ramp on
+layers 0 and 2 (regs sy0/sy2, one write pair per line), keeps the ramp
+running through every vblank line, then RESETS the effect's phase at
+the top of each frame (X seeds at line 0, Y ramp restarting at line 1
+several steps away from the vblank tail value). Our renderer works one
+line ahead of the beam, so lines 0-2 sample the old phase before the
+reset lands; lines 3+ track it one step late (sub-pixel, invisible).
+Net effect: the top few lines carry the previous phase during these
+scenes.
+
+Whether real hardware differs is genuinely open: the fresh value for
+line 1 is written MID-line-1 on hardware too, so the real chip cannot
+have had it for that line's left edge either unless its internal fetch
+lead behaves in undocumented ways. The 1cc capture cannot adjudicate
+(HUD covers those lines in gameplay; the video contains no attract).
+Deliberately NOT "fixed": changing our render lead to guess at this
+would risk trading an understood deviation for an unknown one.
+Resolution needs attract-mode PCB footage or a logic analyser.
+
+Related finding: the game also writes a line-indexed value to the CRTC
+horizontal register on EVERY line, always (655k writes per attract
+cycle) - a long-standing MAME mystery ("many CRTC writes" TODO). Both
+MAME and this core ignore the register; the footage shows real
+hardware has no visible geometric response to it either.
 
 ### 3.4 Resolved: heavy-scene line budget (2026-07-11)
 

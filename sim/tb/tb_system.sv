@@ -321,12 +321,26 @@ module tb_system;
   end
 
   // raster write log (matches MAME's tap_raster.lua format)
-  int raster_fh;
+  int raster_fh, kick_fh;
   initial begin
     if ($test$plusargs("RASTERLOG")) begin
       raster_fh = $fopen("build/raster_writes_sim.csv", "w");
       $fwrite(raster_fh, "frame,vpos,hpos,addr,data\n");
-    end else raster_fh = 0;
+      kick_fh = $fopen("build/raster_kicks_sim.csv", "w");
+      $fwrite(kick_fh, "frame,line,vpos,hpos,sy0,sx0,sy1,sx1,sy2,sx2\n");
+    end else begin raster_fh = 0; kick_fh = 0; end
+  end
+  // renderer kick probe: the line number and the live scroll registers
+  // at the moment the render pass for that line starts (top-lines
+  // delayed-parallax investigation: compare against the write log)
+  always_ff @(posedge clk) begin
+    if (kick_fh != 0 && dut.u_vdp.rnd_start)
+      $fwrite(kick_fh, "%0d,%0d,%0d,%0d,%0d,%0d,%0d,%0d,%0d,%0d\n",
+              frames_seen, dut.u_vdp.rnd_line,
+              dut.u_vdp.vcnt, dut.u_vdp.hcnt,
+              dut.u_vdp.r_scroll[0], dut.u_vdp.r_scroll[1],
+              dut.u_vdp.r_scroll[2], dut.u_vdp.r_scroll[3],
+              dut.u_vdp.r_scroll[4], dut.u_vdp.r_scroll[5]);
   end
   always_ff @(posedge clk) begin
     if (raster_fh != 0 && !dut.m_asn && m_asn_d && !dut.m_rw) begin
