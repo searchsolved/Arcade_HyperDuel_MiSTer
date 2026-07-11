@@ -201,3 +201,37 @@ NEW DEPLOY PLAN (when home):
 Scripted-input harness is NEW tooling: tb_system +INPUTS=<file>, lines
 "<frame> <p1p2hex> <systemhex>" (active-low; P1 bit4 shot, SYSTEM bit0
 coin1, bit4 start1). Enables offline gameplay regression testing.
+
+## ADDENDUM 2026-07-11: FIFO root cause, full build DEPLOYED, overlap in flight
+
+- KICK FIFO LOST-UPDATE FOUND AND FIXED (commit b349bf5): same-edge
+  enqueue+pop lost the push increment; count drifted low during
+  saturated sections until the ring desynced and the renderer drew
+  stale line numbers forever. Root cause of: historic issue-C line
+  jitter (up to 3-line offsets), likely the rare boot freeze, and the
+  permanent soak blackout at frame ~3400 (CRT-reproduced; OVRC 1B48
+  climbing during title). Revert-tree soak proved it predates all
+  2026-07-09+ work. Fixed soak: content cycles through all 5200 frames.
+- FULL BUILD DEPLOYED 2026-07-11 14:33 (builds/Hyprduel_full_fifofix.rbf,
+  clk_sys +0.228, gate passed). LEE HW-VERIFIED: controls OK, bombs OK,
+  attract survives past the old death point. RESIDUAL: black tearing at
+  stage-1 BOSS death and in stage 2 (gameplay + attract demo) = the
+  measured heavy-scene over-budget (~17.9k lines in the stage-2 attract
+  window; worst 5614 vs 5088).
+- FETCH/EMIT OVERLAP PHASE A IMPLEMENTED (UNCOMMITTED, mid-verification):
+  GISS folds the pair-walk setup + s_xs; GRCV/PRIME/PRIM2/PRIM3/EMIT
+  replaced by ST_S_OVL with three engines (fill per ROM pulse, 2-cycle
+  seed, emit chasing rx2 via s_emit_ok; flipped sprites emit after
+  fill_done). spr_raddr prefetch is stall-aware (advance ? wcur+1 :
+  wcur). Exit needs emit_done AND fill_done (right-clipped sprites).
+  render-verify 4/4 incl. gap-server stall coverage. PENDING: remaining
+  suites + bomb test + 5200 soak (stage-2 window is the metric: 17901
+  to beat, target ~0). If short: Phase B = descending walk for flipped
+  sprites; Phase C = overlap dx-divider under fetch (zoomed).
+- Timing: this build compiled at +0.228 (SEED 2). The overlap adds an
+  emit-gate cone + prefetch mux - expect tighter; seed sweep 3/4/5 if
+  clk_sys < ~+0.2. NEVER deploy below the gate.
+- Top-4-lines "delayed parallax" = one-line render lead vs just-in-time
+  per-line scroll writes; authenticity undetermined (real chip likely
+  identical); documented in plan_release.md; do not fix without PCB
+  reference.
