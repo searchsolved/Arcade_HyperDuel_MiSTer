@@ -64,6 +64,57 @@ Goal: first public Imagetek I4220 core. This doc is the gap between
   edge modes) - guards future Metro-family reuse
 - Real-PCB cross-check: crystal values from PCB photos, speed/raster
   behaviour vs the YouTube 1cc capture
+  - DONE 2026-07-11 (photo read): TWO photo sources. planetharriers
+    blog (flickr 48371679096, 1024px) + arcade-museum.com
+    hyper-duel-41972.jpg (1920x1435, MUCH better - Stefan Lindberg).
+    CONFIRMED on silicon:
+    - All three oscillators match MAME's OSC line exactly: OSC1
+      4.0000 MHz (sound), OSC2 20.0000 MHz (dual CPU /2 = 10 MHz
+      each), OSC3 26.6660 MHz (I4220). Clock tree photo-verified.
+    - VDP part number READ OFF THE CHIP: "Imagetek, Inc. I4220 071
+      9336EK710" at U55 (date code 1993 wk36).
+    - CPUs: Toshiba TMP68000N-10 x2 (both 9311C8Z).
+    - Sound: YM2151 + YM3012 DAC (top-left), OKI M6295 QFP44 at U16,
+      sample EPROM "97" at U97. All match MAME's config.
+    - GFX ROMs: FOUR NEC mask ROMs "TS HYPER-1..4" (9337KD011-014).
+      MAME loads them ROM_LOAD64_WORD (ts_hyper-1..4.u74-u77): the
+      real GFX bus is 64 BITS WIDE - four 16-bit mask ROMs read in
+      parallel. This is the physical reason the real board never
+      tears: per-access sprite fetch bandwidth is 4x our 16-bit SDRAM
+      stream. (CORRECTS an earlier misread of these as DRAMs from the
+      low-res photo.)
+    - VDP work RAM: Cypress CY7C199-25PC 32Kx8 25ns FAST SRAMs (U32-35
+      column + U53/54 + more, exact census needs a sharper photo),
+      plus a CY7C185-35PC. Not DRAM - the VDP has low-latency SRAM.
+    - Glue logic: nine AMI 18CV8PC-25 PALs labelled 442A21-442A28 +
+      442X29 (= our hyprduel_sys decode/arbitration in PAL form).
+    - Program EPROMs "24"/"23" at U24/U23 (museum board = set 1;
+      the blog board's "U24A" sticker = MAME set 2 "24a.u24").
+    - Unpopulated footprints (LS273 x2, LH5496 FIFO x2, 442X29 spare,
+      RA9-12, sockets U85/U89/U86 etc) = alternate fit of the shared
+      TEC442-A board (magerror variant), supporting the family
+      roadmap.
+  - IMPORTANT for R2 audio: MAME's own hyprduel.cpp flags the OKI
+    clock as guesswork ("clock frequency & pin 7 not verified",
+    reconstructed as 4000000/16/16*132). Our OKI pitch calibration
+    target is therefore soft; a real-PCB video with known-good audio
+    is the only trustworthy pitch reference, NOT MAME.
+  - REAL-PCB VIDEO ANALYSED 2026-07-11: youtube 6KcyYm2Ggu0
+    ("HyperDuel 1cc - Arcade PCB : ALL (1.6Mill)" by STG cvlt,
+    22.4 min, direct 720p60 capture, 3.0 px per game line, top lines
+    in frame). Automated tear scan (scratchpad vid/scan_tears.py:
+    left-black-run + right-content + background-continuity signature)
+    over ALL 80,760 frames at 60fps: ZERO genuine tears. Every flag
+    triaged by eye = static scene content (dark doorways, shadows,
+    near-black stage backgrounds). Includes the exact stage-2 scenes
+    and boss kills where our core tears. CONCLUSION: real I4220 never
+    misses a line; zero over-budget lines is the accuracy bar, any
+    residual tearing in our core is OUR defect. Video audio = the
+    real-PCB pitch/balance reference for the R2 audio retune (keep
+    hyprduel_1cc.mp4; re-download from the URL if lost). Top-4-lines
+    check inconclusive from gameplay (HUD covers top rows on real
+    board); needs an attract-mode PCB capture for the parallax
+    comparison - still parked.
 - Scripted-input long-run: full stage-1 boss kill in sim as a repeatable
   regression (extend cfg/inputs_bombtest.txt with survival choreography)
 

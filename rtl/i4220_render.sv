@@ -136,9 +136,9 @@ module i4220_render #(
     ST_L_PIX, ST_L_VR0, ST_L_VR1, ST_L_VR2, ST_L_VR3,
     ST_L_TT1, ST_L_TT2, ST_L_TT3,
     ST_L_GRCV,
-    ST_S_RD0, ST_S_RD1, ST_S_RD2, ST_S_RD3, ST_S_RD4,
-    ST_S_ZOOM, ST_S_COVER, ST_S_COVER2, ST_S_DIV, ST_S_GREQ, ST_S_GMUL, ST_S_GISS, ST_S_GRCV,
-    ST_S_PRIME, ST_S_PRIM2, ST_S_PRIM3, ST_S_EMIT,
+    ST_S_PST0, ST_S_PST1, ST_S_CHK, ST_S_RD1, ST_S_RD2, ST_S_RD3, ST_S_RD4,
+    ST_S_ZOOM, ST_S_COVER, ST_S_COVER2, ST_S_DIV, ST_S_GREQ, ST_S_GMUL, ST_S_GISS,
+    ST_S_OVL,
     ST_L_TT3B,
     ST_RESOLVE
   } st_e;
@@ -178,7 +178,15 @@ module i4220_render #(
   logic [6:0]  sw_pix, sh_pix;   // 8..64
   logic [11:0] out_w, out_h;
   int          sx0, sy0;         // signed screen start
-  int          xo, xo_end;       // output-offset walk bounds
+  // sprite fetch/emit overlap engines (ST_S_OVL): fill receives ROM
+  // pulses into srowcache; seed runs the 2-cycle accumulator setup; emit
+  // chases the received-byte counter. Non-flipped sprites walk the pair
+  // words ascending (left edge first); x-flipped sprites walk DESCENDING
+  // (right edge first, which maps to the lowest source bytes), so the
+  // source index rises monotonically in both cases and a pair word may
+  // emit as soon as its highest source byte has landed
+  logic [1:0]  seed_ph;          // 0,1 = seeding; 2 = accumulators ready
+  logic        emit_done;
   logic [23:0] dx_q, dy_q;
   logic [11:0] rowsel_q;           // pipelined row selection for ROM addr
   logic [35:0] yidx_q;             // pipelined zoom-scaled row index
@@ -197,7 +205,7 @@ module i4220_render #(
   logic [1:0]  s_prival;
   logic [4:0]  s_group;
   logic [7:0]  srowcache [0:63];
-  logic [5:0]  rx2;
+  logic [6:0]  rx2;              // sprite row bytes received (even, 0..64)
 
   // texel fetch from the sprite row cache (combinational, used twice per
   // emit cycle - one per pair half)
@@ -206,6 +214,21 @@ module i4220_render #(
     else stexel_of = pix[0] ? {4'd0, srowcache[pix[6:1]][7:4]}
                             : {4'd0, srowcache[pix[6:1]][3:0]};
   endfunction
+
+  // overlap-emit gating: highest source byte the current pair word needs
+  // (clip-aware: a disabled half must not demand its byte - the high
+  // source half is the odd pixel when ascending, the even pixel when
+  // descending), compared against the received-byte counter. Only bytes
+  // strictly below rx2 are ever read, so a same-edge fill write can
+  // never be consumed early.
+  wire        s_fill_done = (rx2 == o_rom_len);
+  wire [11:0] s_pix_hi    = sattr[15]
+                          ? (({wcur, 1'b0} >= sxl) ? s_pix0 : s_pix1)
+                          : (({wcur, 1'b1} <  sxh) ? s_pix1 : s_pix0);
+  wire [6:0]  s_byte_need = s_bpp8 ? ({1'b0, s_pix_hi[5:0]} + 7'd1)
+                                   : ({1'b0, s_pix_hi[6:1]} + 7'd1);
+  wire        s_emit_ok   = (seed_ph == 2'd2) && !emit_done &&
+                            (s_byte_need <= rx2 || s_fill_done);
 
   // sprite prescan check: the vblank copy engine precomputes each sprite's
   // raw y extent (same ohv arithmetic as ST_S_COVER/COVER2, sprite words
@@ -222,8 +245,11 @@ module i4220_render #(
   wire pst_reject = i_pst_valid &&
                     (i_pst_data[21] || lline_adj < pst_y || lline_adj >= pst_yend);
 
-  // serial divider (shared, phase 0 = dy, 1 = dx)
-  logic        div_phase;
+  // serial divider (shared, phase 0 = dy, 1 = dx). The dy pass runs in
+  // ST_S_DIV (the ROM row address needs it); the dx pass then runs in
+  // the BACKGROUND under the ROM request/fill (div_bg), since dx is not
+  // consumed until emit seeding, which gates on div_bg clearing.
+  logic        div_bg;
   logic [23:0] div_num, div_rem, div_quot;
   logic [11:0] div_den;
   logic [4:0]  div_cnt;
@@ -242,6 +268,12 @@ module i4220_render #(
       2'd1: layer_pri_of = i_layer_pri[3:2];
       default: layer_pri_of = i_layer_pri[5:4];
     endcase
+  endfunction
+
+  // walk-order index -> raw sprite-table slot (list walks back-to-front
+  // unless the priority-disable bit flips it)
+  function automatic logic [8:0] slot_of(input logic [9:0] i);
+    slot_of = lp_dis ? i[8:0] : (scount[8:0] - 9'd1 - i[8:0]);
   endfunction
 
   // ------------------------------------------------------------------
@@ -316,13 +348,16 @@ module i4220_render #(
 
   always_comb begin
     lay_raddr = xtrack;
-    spr_raddr = (st == ST_S_EMIT) ? (wcur + 8'd1)
-              : (st == ST_S_PRIME || st == ST_S_PRIM2 || st == ST_S_PRIM3)
-                ? wcur
+    // during OVL the RMW prefetch must track emit stalls: read the NEXT
+    // word only on a cycle that actually advances, else hold the current
+    // word so spr_q stays coherent with the word being merged
+    spr_raddr = (st == ST_S_OVL)
+                ? (s_emit_ok ? (sattr[15] ? (wcur - 8'd1) : (wcur + 8'd1))
+                             : wcur)
               : (st == ST_S_RD1 || st == ST_S_RD2 || st == ST_S_RD3 ||
                  st == ST_S_RD4 || st == ST_S_ZOOM || st == ST_S_COVER ||
                  st == ST_S_COVER2 ||
-                 st == ST_S_DIV || st == ST_S_GREQ || st == ST_S_GRCV)
+                 st == ST_S_DIV || st == ST_S_GREQ)
                 ? 8'(((sx0 < 0) ? 9'd0 : 9'(sx0)) >> 1)
               : 8'(xtrack >> 1);
   end
@@ -338,12 +373,27 @@ module i4220_render #(
       o_lb_we <= 1'b0;
       o_rom_req <= 1'b0;
       did_init <= 1'b0;
+      div_bg <= 1'b0;
     end else begin
       o_done <= 1'b0;
       o_lb_we <= 1'b0;
       o_rom_req <= 1'b0;
       lay_we <= 1'b0;
       spr_we <= 1'b0;
+
+      // background dx division (Phase C): steps while the ROM request
+      // issues and the sprite row streams in. Placed before the case so
+      // an in-state assignment (the GREQ-reject abandon) wins conflicts.
+      if (div_bg && st != ST_S_DIV) begin
+        div_num  <= {div_num[22:0], 1'b0};
+        div_rem  <= div_ge ? (div_rem_sh - 24'(div_den)) : div_rem_sh;
+        div_quot <= div_q_next;
+        if (div_cnt == 0) begin
+          dx_q   <= div_q_next;
+          div_bg <= 1'b0;
+        end else
+          div_cnt <= div_cnt - 5'd1;
+      end
 
       unique case (st)
         ST_IDLE: begin
@@ -405,7 +455,7 @@ module i4220_render #(
               if (layer == 2'd0) begin
                 scur   <= 10'd0;
                 scount <= {1'b0, i_spr_count[8:0]};   // count % 512
-                st <= (i_spr_count[8:0] == 9'd0) ? ST_RESOLVE : ST_S_RD0;
+                st <= (i_spr_count[8:0] == 9'd0) ? ST_RESOLVE : ST_S_PST0;
               end else
                 layer <= layer - 2'd1;
             end else
@@ -502,13 +552,31 @@ module i4220_render #(
         end
 
         // ---------------- sprite pass ----------------
-        ST_S_RD0: begin
+        // prescan-table read pipelining: the table port has a 2-cycle
+        // address-to-data lag, so ST_S_CHK keeps it pointed two sprites
+        // ahead of the one being checked. Invariant at every CHK cycle:
+        // the address set 2 cycles ago is the current sprite, the one
+        // set 1 cycle ago is the next. Rejects then cost 1 cycle each;
+        // every advance-to-next-sprite point re-arms slot(scur+2).
+        ST_S_PST0: begin
+          o_pst_addr <= slot_of(10'd0);
+          st <= ST_S_PST1;
+        end
+
+        ST_S_PST1: begin
+          o_pst_addr <= slot_of(10'd1);
+          st <= ST_S_CHK;
+        end
+
+        ST_S_CHK: begin
           if (scur == scount) st <= ST_RESOLVE;
-          else begin
-            o_spr_addr <= {(lp_dis ? scur[8:0]
-                                   : (scount[8:0] - 9'd1 - scur[8:0])), 2'd0};
-            o_pst_addr <= lp_dis ? scur[8:0]
-                                 : (scount[8:0] - 9'd1 - scur[8:0]);
+          else if (pst_reject) begin
+            scur <= scur + 10'd1;
+            o_pst_addr <= slot_of(scur + 10'd2);
+            // stay in CHK: next sprite's entry is already arriving
+          end else begin
+            o_spr_addr <= {slot_of(scur), 2'd0};
+            o_pst_addr <= slot_of(scur + 10'd1);
             st <= ST_S_RD1;
           end
         end
@@ -521,10 +589,13 @@ module i4220_render #(
         ST_S_RD2: begin
           sw0 <= i_spr_data;
           o_spr_addr <= {o_spr_addr[10:2], 2'd2};
-          // disabled, or prescan says the sprite cannot touch this line
-          if (i_spr_data[15:11] == 5'h1F || pst_reject) begin
+          // disabled-sprite word check: covered by the prescan table
+          // when it is valid, but must remain for the first frame
+          // (pst_valid=0) when CHK accepts everything
+          if (i_spr_data[15:11] == 5'h1F) begin
             scur <= scur + 10'd1;
-            st <= ST_S_RD0;
+            o_pst_addr <= slot_of(scur + 10'd2);
+            st <= ST_S_CHK;
           end else
             st <= ST_S_RD3;
         end
@@ -592,7 +663,8 @@ module i4220_render #(
               int'(line_r) < sy0 || int'(line_r) >= sy0 + int'(ohv) ||
               sx0 >= WIDTH || sx0 + int'(owv) <= 0) begin
             scur <= scur + 10'd1;
-            st <= ST_S_RD0;
+            o_pst_addr <= slot_of(scur + 10'd2);
+            st <= ST_S_CHK;
           end else if (szoom == 20'h10000) begin
             // 1:1 zoom (the common case): out = dim, step = 1.0 exactly;
             // skip the ~50-cycle serial divider entirely
@@ -605,7 +677,6 @@ module i4220_render #(
             div_quot <= 24'd0;
             div_rem  <= 24'd0;
             div_cnt  <= 5'd23;
-            div_phase <= 1'b0;
             st <= ST_S_DIV;
           end
         end
@@ -615,18 +686,16 @@ module i4220_render #(
           div_rem  <= div_ge ? (div_rem_sh - 24'(div_den)) : div_rem_sh;
           div_quot <= div_q_next;
           if (div_cnt == 0) begin
-            if (!div_phase) begin
-              dy_q <= div_q_next;
-              div_num  <= {1'd0, sw_pix, 16'd0};
-              div_den  <= out_w;
-              div_quot <= 24'd0;
-              div_rem  <= 24'd0;
-              div_cnt  <= 5'd23;
-              div_phase <= 1'b1;
-            end else begin
-              dx_q <= div_q_next;
-              st <= ST_S_GREQ;
-            end
+            dy_q <= div_q_next;
+            // dx pass continues in the background under the ROM
+            // request and row fill (Phase C); emit seeding gates on it
+            div_num  <= {1'd0, sw_pix, 16'd0};
+            div_den  <= out_w;
+            div_quot <= 24'd0;
+            div_rem  <= 24'd0;
+            div_cnt  <= 5'd23;
+            div_bg   <= 1'b1;
+            st <= ST_S_GREQ;
           end else
             div_cnt <= div_cnt - 5'd1;
         end
@@ -636,7 +705,9 @@ module i4220_render #(
           if (int'(line_r) < sy0 || int'(line_r) >= sy0 + int'(out_h) ||
               sx0 >= WIDTH || sx0 + int'(out_w) <= 0) begin
             scur <= scur + 10'd1;
-            st <= ST_S_RD0;
+            o_pst_addr <= slot_of(scur + 10'd2);
+            div_bg <= 1'b0;      // abandon the in-flight dx division
+            st <= ST_S_CHK;
           end else begin
             rowoff = 12'(int'(line_r) - sy0);
             rowsel_q <= sattr[14] ? (out_h - 12'd1 - rowoff) : rowoff;
@@ -651,95 +722,101 @@ module i4220_render #(
 
         ST_S_GISS: begin
           logic [25:0] rowb;
+          int          xo_c;
+          logic [8:0]  sxh_c;
           rowb = sgfx + (s_bpp8
                  ? 26'(yidx_q[27:16]) * 26'(sw_pix)
                  : 26'(yidx_q[27:16]) * 26'(sw_pix >> 1));
           o_rom_addr <= rowb[GFX_AW-1:0];
           o_rom_len  <= s_bpp8 ? sw_pix : (sw_pix >> 1);
           o_rom_req  <= 1'b1;
-          rx2 <= 6'd0;
-          st <= ST_S_GRCV;
+          rx2 <= 7'd0;
+          // fold the pair-walk setup and flip-adjusted start index in
+          // here (formerly GRCV-end + PRIME); none of it needs ROM data.
+          // x-flipped sprites walk descending: start at the sxh-side pair
+          // word (lowest source bytes), terminate at the sxl-side word
+          xo_c  = (sx0 < 0) ? -sx0 : 0;
+          sxh_c = (sx0 + int'(out_w) > WIDTH) ? 9'(WIDTH)
+                                              : 9'(sx0 + int'(out_w));
+          sxl   <= (sx0 < 0) ? 9'd0 : 9'(sx0);
+          sxh   <= sxh_c;
+          wcur  <= sattr[15] ? 8'((sxh_c - 9'd1) >> 1)
+                             : 8'(((sx0 < 0) ? 9'd0 : 9'(sx0)) >> 1);
+          w_end <= sattr[15] ? 8'(((sx0 < 0) ? 9'd0 : 9'(sx0)) >> 1)
+                             : 8'((sxh_c - 9'd1) >> 1);
+          s_xs  <= sattr[15] ? 12'(int'(out_w) + sx0 - int'(sxh_c))
+                             : 12'(xo_c);
+          seed_ph   <= 2'd0;
+          emit_done <= 1'b0;
+          st <= ST_S_OVL;
         end
 
-        ST_S_GRCV: begin
-          if (i_rom_valid) begin
-            srowcache[rx2]              <= i_rom_data[15:8];
-            srowcache[{rx2[5:1], 1'b1}] <= i_rom_data[7:0];
-            if ({1'd0, rx2} == o_rom_len - 7'd2) begin
-              xo     <= (sx0 < 0) ? -sx0 : 0;
-              xo_end <= (sx0 + int'(out_w) > WIDTH) ? (WIDTH - sx0)
-                                                    : int'(out_w);
-              sxl    <= (sx0 < 0) ? 9'd0 : 9'(sx0);
-              sxh    <= (sx0 + int'(out_w) > WIDTH) ? 9'(WIDTH)
-                                                    : 9'(sx0 + int'(out_w));
-              wcur   <= 8'(((sx0 < 0) ? 9'd0 : 9'(sx0)) >> 1);
-              st <= ST_S_PRIME;
-            end else
-              rx2 <= rx2 + 6'd2;
-          end
-        end
-
-        ST_S_PRIME: begin
-          // stage 1: resolve the flip-adjusted start index of the clipped
-          // start pixel (always >= 0, as in the 1-pixel-per-cycle design)
-          s_xs <= 12'(sattr[15] ? (int'(out_w) - 1 - xo) : xo);
-          w_end <= 8'((sxh - 9'd1) >> 1);
-          st <= ST_S_PRIM2;
-        end
-
-        ST_S_PRIM2: begin
-          // stage 2: one registered-input multiply seeds the half the
-          // start pixel lands in (even or odd screen x)
-          if (sxl[0]) s_xi1 <= 36'(s_xs) * 36'(dx_q);
-          else        s_xi0 <= 36'(s_xs) * 36'(dx_q);
-          st <= ST_S_PRIM3;
-        end
-
-        ST_S_PRIM3: begin
-          // stage 3: derive the other half one source step away. For an
-          // odd start the even half is the (write-disabled) pixel to the
-          // LEFT: one step backwards, exact modulo 2^36.
-          if (sxl[0]) s_xi0 <= sattr[15] ? (s_xi1 + 36'(dx_q))
-                                         : (s_xi1 - 36'(dx_q));
-          else        s_xi1 <= sattr[15] ? (s_xi0 - 36'(dx_q))
-                                         : (s_xi0 + 36'(dx_q));
-          st <= ST_S_EMIT;
-        end
-
-        ST_S_EMIT: begin
-          // one pair word per cycle: two texels, two priority tests, one
-          // read-modify-write against the prefetched old word (spr_q)
+        ST_S_OVL: begin
+          // three concurrent engines: FILL receives the ROM word stream,
+          // SEED runs the 2-cycle accumulator setup, EMIT retires one
+          // pair word per cycle as soon as its source bytes have landed
+          // (s_emit_ok). A right-clipped sprite finishes emitting before
+          // its stream drains, so exit needs emit_done AND fill done.
           logic [7:0]  t0, t1;
           logic        op0, op1, we0, we1;
           logic [19:0] n0, n1;
-          t0 = stexel_of(s_pix0);
-          t1 = stexel_of(s_pix1);
-          op0 = s_bpp8 ? (t0 != 8'hFF) : (t0[3:0] != 4'hF);
-          op1 = s_bpp8 ? (t1 != 8'hFF) : (t1[3:0] != 4'hF);
-          we0 = ({wcur, 1'b0} >= sxl) && op0 &&
-                (!spr_q[19] || s_group < spr_q[18:14]);
-          we1 = ({wcur, 1'b1} < sxh) && op1 &&
-                (!spr_q[39] || s_group < spr_q[38:34]);
-          n0 = {1'b1, s_group, s_prival,
-                spr_palbase | (s_bpp8 ? 12'(t0)
-                             : ({4'd0, sattr[7:4], 4'd0} | 12'(t0)))};
-          n1 = {1'b1, s_group, s_prival,
-                spr_palbase | (s_bpp8 ? 12'(t1)
-                             : ({4'd0, sattr[7:4], 4'd0} | 12'(t1)))};
-          if (we0 || we1) begin
-            spr_we    <= 1'b1;
-            spr_waddr <= wcur;
-            spr_wdata <= {we1 ? n1 : spr_q[39:20], we0 ? n0 : spr_q[19:0]};
+          // fill
+          if (i_rom_valid) begin
+            srowcache[rx2[5:0]]         <= i_rom_data[15:8];
+            srowcache[{rx2[5:1], 1'b1}] <= i_rom_data[7:0];
+            rx2 <= rx2 + 7'd2;
           end
-          s_xi0 <= sattr[15] ? (s_xi0 - {11'd0, dx_q, 1'b0})
-                             : (s_xi0 + {11'd0, dx_q, 1'b0});
-          s_xi1 <= sattr[15] ? (s_xi1 - {11'd0, dx_q, 1'b0})
-                             : (s_xi1 + {11'd0, dx_q, 1'b0});
-          if (wcur == w_end) begin
+          // seed: the anchor is the first visible pixel of the walk
+          // (sxl when ascending, sxh-1 when descending); its half gets
+          // the exact product, the other half derives one source step
+          // away (a write-disabled pixel when the anchor word is
+          // half-clipped, tracked wrapped - exact by linearity).
+          // Waits for the background dx division (Phase C) to land.
+          if (seed_ph == 2'd0 && !div_bg) begin
+            if (sattr[15] ? !sxh[0] : sxl[0])
+                 s_xi1 <= 36'(s_xs) * 36'(dx_q);
+            else s_xi0 <= 36'(s_xs) * 36'(dx_q);
+            seed_ph <= 2'd1;
+          end else if (seed_ph == 2'd1) begin
+            if (sattr[15] ? !sxh[0] : sxl[0])
+                 s_xi0 <= sattr[15] ? (s_xi1 + 36'(dx_q))
+                                    : (s_xi1 - 36'(dx_q));
+            else s_xi1 <= sattr[15] ? (s_xi0 - 36'(dx_q))
+                                    : (s_xi0 + 36'(dx_q));
+            seed_ph <= 2'd2;
+          end
+          // emit
+          if (s_emit_ok) begin
+            t0 = stexel_of(s_pix0);
+            t1 = stexel_of(s_pix1);
+            op0 = s_bpp8 ? (t0 != 8'hFF) : (t0[3:0] != 4'hF);
+            op1 = s_bpp8 ? (t1 != 8'hFF) : (t1[3:0] != 4'hF);
+            we0 = ({wcur, 1'b0} >= sxl) && op0 &&
+                  (!spr_q[19] || s_group < spr_q[18:14]);
+            we1 = ({wcur, 1'b1} < sxh) && op1 &&
+                  (!spr_q[39] || s_group < spr_q[38:34]);
+            n0 = {1'b1, s_group, s_prival,
+                  spr_palbase | (s_bpp8 ? 12'(t0)
+                               : ({4'd0, sattr[7:4], 4'd0} | 12'(t0)))};
+            n1 = {1'b1, s_group, s_prival,
+                  spr_palbase | (s_bpp8 ? 12'(t1)
+                               : ({4'd0, sattr[7:4], 4'd0} | 12'(t1)))};
+            if (we0 || we1) begin
+              spr_we    <= 1'b1;
+              spr_waddr <= wcur;
+              spr_wdata <= {we1 ? n1 : spr_q[39:20], we0 ? n0 : spr_q[19:0]};
+            end
+            // both walk directions raise the source index by 2 per word
+            s_xi0 <= s_xi0 + {11'd0, dx_q, 1'b0};
+            s_xi1 <= s_xi1 + {11'd0, dx_q, 1'b0};
+            if (wcur == w_end) emit_done <= 1'b1;
+            else wcur <= sattr[15] ? (wcur - 8'd1) : (wcur + 8'd1);
+          end
+          if (emit_done && s_fill_done) begin
             scur <= scur + 10'd1;
-            st <= ST_S_RD0;
-          end else
-            wcur <= wcur + 8'd1;
+            o_pst_addr <= slot_of(scur + 10'd2);
+            st <= ST_S_CHK;
+          end
         end
 
         // ---------------- resolve ----------------
@@ -782,13 +859,30 @@ module i4220_render #(
   logic [31:0] dbg_pst_rej;
   always_ff @(posedge clk) begin
     if (!rst_n) dbg_pst_rej <= '0;
-    else if (st == ST_S_RD2 && pst_reject) dbg_pst_rej <= dbg_pst_rej + 1;
+    else if (st == ST_S_CHK && scur != scount && pst_reject)
+      dbg_pst_rej <= dbg_pst_rej + 1;
+  end
+
+  // sprite-pass load attribution (read hierarchically by tb_system):
+  // div = serial-divider cycles (Phase C would reclaim these);
+  // stall = OVL cycles where emit waits on ROM bytes/seed with the fill
+  // still active (irreducible fetch-bound time at the current ROM rate)
+  logic [31:0] dbg_div_cyc, dbg_ovl_stall;
+  always_ff @(posedge clk) begin
+    if (!rst_n) begin
+      dbg_div_cyc   <= '0;
+      dbg_ovl_stall <= '0;
+    end else begin
+      if (st == ST_S_DIV) dbg_div_cyc <= dbg_div_cyc + 1;
+      if (st == ST_S_OVL && !s_emit_ok && !emit_done)
+        dbg_ovl_stall <= dbg_ovl_stall + 1;
+    end
   end
 
   // cycle trace of the sprite attribute read handshake (debug only)
   always_ff @(posedge clk) begin
     if ($test$plusargs("SPRTRC") && line_r == 8'd100 && scur < 10'd2 &&
-        (st == ST_S_RD0 || st == ST_S_RD1 || st == ST_S_RD2 ||
+        (st == ST_S_CHK || st == ST_S_RD1 || st == ST_S_RD2 ||
          st == ST_S_RD3 || st == ST_S_RD4 || st == ST_S_ZOOM))
       $display("SPRTRC st=%s addr=%03x data=%04x scur=%0d",
                st.name(), o_spr_addr, i_spr_data, scur);

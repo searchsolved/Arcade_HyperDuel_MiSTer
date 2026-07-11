@@ -507,6 +507,27 @@ module tb_system;
   int sub_samp, main_samp;
   logic stuck_dumped;
 
+  // renderer/GFX-stream wedge watchdog: if a render runs 4x the line
+  // budget, snapshot the FSM and stream state (one-shot per wedge)
+  int  wd_cyc;
+  int  wd_shots;
+  always_ff @(posedge clk) begin
+    if (dut.u_vdp.rnd_busy) wd_cyc <= wd_cyc + 1;
+    else wd_cyc <= 0;
+    if (wd_cyc == 424 * PIXDIV * 4 && wd_shots < 8) begin
+      wd_shots <= wd_shots + 1;
+      $display("WEDGE f=%0d render st=%0d line=%0d romlen=%0d rx=%0d rx2=%0d scur=%0d wcur=%0d",
+               frames_seen, dut.u_vdp.u_render.st, dut.u_vdp.u_render.line_r,
+               dut.u_vdp.u_render.o_rom_len, dut.u_vdp.u_render.rx,
+               dut.u_vdp.u_render.rx2, dut.u_vdp.u_render.scur,
+               dut.u_vdp.u_render.wcur);
+      $display("WEDGE arb gr=%0d gr_left=%0d rp_pend=%0d sdram gfx: pend=%0d left=%0d wmode=%0d bfcnt=%0d owner=%0d sdst=%0d",
+               dut.u_vdp.gr, dut.u_vdp.gr_left, dut.u_vdp.rp_pend,
+               u_sdr.gfx_pend, u_sdr.gfx_left, u_sdr.gfx_wmode,
+               u_sdr.bf_cnt, u_sdr.owner, u_sdr.st);
+    end
+  end
+
   task automatic dump_state(input string outdir, input int n);
     int fh;
     $writememh($sformatf("%s/st%0d_vram0.hex", outdir, n), dut.u_vdp.u_vram0.mem);
@@ -632,6 +653,8 @@ module tb_system;
       $display("oki sdram: data_mismatches=%0d max_ok_latency=%0d", oki_mism, oki_maxlat);
     $display("render: worst_line_cycles=%0d prescan_rejects=%0d over_budget_lines=%0d last_over_frame=%0d",
              rb_max, dut.u_vdp.u_render.dbg_pst_rej, rb_over, rb_over_frame);
+    $display("render load: div_cycles=%0d ovl_stall_cycles=%0d",
+             dut.u_vdp.u_render.dbg_div_cyc, dut.u_vdp.u_render.dbg_ovl_stall);
     for (int i = 0; i < okiw_n; i++)
       $display("  OKIW f=%0d val=%02x", okiw_log[i][23:8], okiw_log[i][7:0]);
     for (int i = 0; i < okir_n; i++)
