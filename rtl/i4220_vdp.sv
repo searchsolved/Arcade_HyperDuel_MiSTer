@@ -359,6 +359,8 @@ module i4220_vdp #(
   logic [1:0] kf_wr, kf_rd;
   logic [2:0] kf_cnt;
   always_ff @(posedge clk) begin
+    logic kf_push, kf_pop;
+    kf_push = 1'b0; kf_pop = 1'b0;
     if (!rst_n) begin
       rnd_start <= 1'b0;
       rnd_overrun <= 1'b0;
@@ -380,7 +382,7 @@ module i4220_vdp #(
         end else begin
           kick_fifo[kf_wr] <= {frame_par, next_v};
           kf_wr <= kf_wr + 2'd1;
-          kf_cnt <= kf_cnt + 3'd1;
+          kf_push = 1'b1;
         end
       end
       if (kf_cnt != 0 && !rnd_busy && !rnd_start) begin
@@ -389,8 +391,19 @@ module i4220_vdp #(
         lb_bank   <= kick_fifo[kf_rd][1:0];
         cur_par   <= kick_fifo[kf_rd][9];
         kf_rd <= kf_rd + 2'd1;
-        kf_cnt <= kf_cnt - 3'd1;
+        kf_pop = 1'b1;
       end
+      // single counter update: a same-edge push+pop must net ZERO. The
+      // old two-assignment form lost the push (last write won), so the
+      // count drifted low during saturated sections until pops stalled
+      // with entries queued, the write pointer lapped the read pointer,
+      // and the renderer was fed stale line numbers forever - the
+      // permanent post-demo blackout found in the 5200-frame soak.
+      unique case ({kf_push, kf_pop})
+        2'b10:   kf_cnt <= kf_cnt + 3'd1;
+        2'b01:   kf_cnt <= kf_cnt - 3'd1;
+        default: ;
+      endcase
     end
   end
 
