@@ -289,9 +289,15 @@ module i4220_render #(
   logic [15:0] tileoffs;
   logic [4:0]  pix_x, pix_y;
 
+  // next-tile lookahead: the same derivation evaluated at the first x
+  // of the following tile, feeding the prefetch of its map word
+  logic [15:0] la_tileoffs;
+  logic [8:0]  la_x;
+
   always_comb begin
     logic [31:0] winw_m, winh_m, big_m;
     logic [31:0] resx, resy, scx, scy, srcc, srcl;
+    logic [31:0] la_resx, la_scx, la_srcc;
     int ts;
     big  = i_screen_ctrl[5 + 32'(layer)];
     ts   = big ? 4 : 3;
@@ -311,7 +317,22 @@ module i4220_render #(
     tileoffs = 16'(((srcl >> ts) << 8) | (srcc >> ts));
     pix_x    = 5'(srcc) & (tsz - 5'd1);
     pix_y    = 5'(srcl) & (tsz - 5'd1);
+
+    la_x     = xcur + 9'(tsz - pix_x);
+    la_resx  = 32'(i_scroll_x[layer]) + 32'(la_x) - 32'(i_window_x[layer]);
+    la_scx   = la_resx & winw_m;
+    la_srcc  = (32'(i_window_x[layer]) + la_scx) & big_m;
+    la_tileoffs = 16'(((srcl >> ts) << 8) | (la_srcc >> ts));
   end
+
+  // map-word prefetch staging: issued mid-walk, tag-matched at the
+  // boundary. A mid-walk scroll write that changes the mapping fails
+  // the tag compare and falls back to the serial read path.
+  logic        pf_valid;
+  logic [15:0] pf_tag;
+  logic [15:0] pf_data;
+  logic [1:0]  pf_cnt;
+  logic        pf_wait;
 
   // tile pixel from row cache (combinational)
   logic [7:0]  tile_texel;
@@ -382,6 +403,8 @@ module i4220_render #(
       div_bg <= 1'b0;
       f_parked <= 1'b0;
       f_end <= 1'b0;
+      pf_valid <= 1'b0;
+      pf_wait <= 1'b0;
     end else begin
       o_done <= 1'b0;
       o_lb_we <= 1'b0;
@@ -431,13 +454,47 @@ module i4220_render #(
 
         // ---------------- tilemap passes ----------------
         ST_L_PIX: begin
-          if (prev_tileoffs != {1'b0, tileoffs}) begin
-            o_vram_addr   <= tileoffs;
+          logic pf_hit;
+          pf_hit = pf_valid && (pf_tag == tileoffs);
+          if (prev_tileoffs != {1'b0, tileoffs} &&
+              !(pf_hit && cache_valid && pf_data == cache_code)) begin
             prev_tileoffs <= {1'b0, tileoffs};
-            st <= ST_L_VR0;
+            pf_valid <= 1'b0;
+            pf_wait  <= 1'b0;   // abandon any in-flight prefetch: an
+            // early boundary (window wrap mid-tile) must not let the
+            // counter capture the serial read under a stale tag
+            if (pf_hit) begin
+              // prefetched map word: skip the VRAM wait states
+              vdata_r <= pf_data;
+              st <= ST_L_VR3;
+            end else begin
+              o_vram_addr   <= tileoffs;
+              st <= ST_L_VR0;
+            end
           end else begin
             logic do_write;
             logic [11:0] wpen;
+            // zero-stall boundary: prefetched word matches the cached
+            // code, so the walk continues straight into the new tile
+            if (prev_tileoffs != {1'b0, tileoffs}) begin
+              prev_tileoffs <= {1'b0, tileoffs};
+              pf_valid <= 1'b0;
+            end
+            // issue the next tile's map read while walking this one
+            if (pix_x == tsz - 5'd4 && la_x < 9'(WIDTH)) begin
+              o_vram_addr <= la_tileoffs;
+              pf_tag  <= la_tileoffs;
+              pf_cnt  <= 2'd0;
+              pf_wait <= 1'b1;
+              pf_valid <= 1'b0;
+            end else if (pf_wait) begin
+              pf_cnt <= pf_cnt + 2'd1;
+              if (pf_cnt == 2'd2) begin
+                pf_data  <= i_vram_data[layer];
+                pf_valid <= 1'b1;
+                pf_wait  <= 1'b0;
+              end
+            end
             do_write = 1'b0;
             wpen = 12'd0;
             if (!cache_oor) begin
@@ -460,6 +517,8 @@ module i4220_render #(
               xcur <= 9'd0;
               prev_tileoffs <= 17'h10000;
               cache_valid <= 1'b0;
+              pf_valid <= 1'b0;
+              pf_wait  <= 1'b0;
               if (layer == 2'd0) begin
                 scur   <= 10'd0;
                 scount <= {1'b0, i_spr_count[8:0]};   // count % 512
