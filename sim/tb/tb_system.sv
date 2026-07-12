@@ -37,6 +37,11 @@ module tb_system;
   logic [7:0] dbg_subctl;
   logic       dbg_subrst;
   logic signed [15:0] audio;
+  logic tb_compat60;
+  initial begin
+    tb_compat60 = 1'b0;                 // default = measured 261-line frame
+    if ($test$plusargs("COMPAT60")) tb_compat60 = 1'b1;
+  end
   longint audio_activity;
   logic signed [15:0] audio_d;
   always_ff @(posedge clk) begin
@@ -113,6 +118,7 @@ module tb_system;
     .o_hblank(), .o_vblank(),
     .o_r(r5), .o_g(g5), .o_b(b5),
     .o_audio(audio),
+    .i_compat60(tb_compat60),
     .i_p1p2(inp_p1p2), .i_system(inp_system),
     .i_dsw(16'hFFBF), .i_service(16'hFFFF),  // dsw bit6=0: demo sounds ON
     .o_mrom_rd(mrom_rd), .o_mrom_addr(mrom_addr),
@@ -458,12 +464,12 @@ module tb_system;
     // Track whether sy0/sy2 changed between h0 and h120 of the kick line
     // to evaluate a conditional (ramp-active-only) late kick.
     if (dut.u_vdp.ce_pix && dut.u_vdp.hcnt == 9'd0) begin
-      lk_nv = (dut.u_vdp.vcnt == 9'd261) ? 9'd0 : dut.u_vdp.vcnt + 9'd1;
+      lk_nv = (dut.u_vdp.vcnt == dut.u_vdp.vlast) ? 9'd0 : dut.u_vdp.vcnt + 9'd1;
       if (lk_nv == 9'd0 || lk_nv == 9'd2)
         lk_snap[lk_nv[1]] <= {dut.u_vdp.r_scroll[0], dut.u_vdp.r_scroll[4]};
     end
     if (dut.u_vdp.ce_pix && dut.u_vdp.hcnt == 9'd120) begin
-      lk_nv = (dut.u_vdp.vcnt == 9'd261) ? 9'd0 : dut.u_vdp.vcnt + 9'd1;
+      lk_nv = (dut.u_vdp.vcnt == dut.u_vdp.vlast) ? 9'd0 : dut.u_vdp.vcnt + 9'd1;
       if (lk_nv == 9'd0 || lk_nv == 9'd2)
         lk_changed[lk_nv[1]] <=
           lk_snap[lk_nv[1]] != {dut.u_vdp.r_scroll[0], dut.u_vdp.r_scroll[4]};

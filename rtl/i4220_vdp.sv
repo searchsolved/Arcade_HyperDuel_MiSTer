@@ -64,6 +64,11 @@ module i4220_vdp #(
     input  logic              i_rom_valid,
     input  logic [23:0]       i_gfx_size,
 
+    // Video timing: 0 = measured 261-line frame (60.2408 Hz, hardware
+    // -verified), 1 = legacy MAME 262-line frame (60.011 Hz) for
+    // displays that reject 60.24 Hz in sync-locked HDMI modes.
+    input  logic i_compat60,
+
     // DEBUG: diagnostic flags for hardware bring-up
     output logic o_dbg_vdp_write,    // CPU ever wrote to VDP
     output logic o_dbg_line_start,   // line_start ever fired
@@ -74,7 +79,7 @@ module i4220_vdp #(
 );
 
   localparam int H_VIS = 320, H_TOTAL = 424;
-  localparam int V_VIS = 224, V_TOTAL = 262;
+  localparam int V_VIS = 224;   // frame total is runtime: see vlast
   localparam int HS_BEG = 352, HS_END = 384;
   localparam int VS_BEG = 232, VS_END = 236;
 
@@ -244,15 +249,22 @@ module i4220_vdp #(
       if (ce_pix) begin
         if (32'(hcnt) == H_TOTAL - 1) begin
           hcnt <= '0;
-          vcnt <= (32'(vcnt) == V_TOTAL - 1) ? '0 : vcnt + 1'b1;
+          vcnt <= (vcnt == vlast) ? '0 : vcnt + 1'b1;
         end else
           hcnt <= hcnt + 1'b1;
       end
     end
   end
 
+  // Frame total: MEASURED at 261 lines (60.2408 Hz with the 424-dot
+  // line at 6.6665 MHz) from two PCB recordings by three agreeing
+  // methods (docs/plan_refresh_measurement.md, ACCURACY.md 3.6); the
+  // game itself only ever programs 261 raster lines. i_compat60
+  // selects the legacy MAME-assumed 262-line frame (60.011 Hz) for
+  // displays that reject 60.24 Hz in sync-locked HDMI modes.
+  wire [8:0] vlast = i_compat60 ? 9'd261 : 9'd260;
   wire line_start   = ce_pix && (32'(hcnt) == H_TOTAL - 1);
-  wire [8:0] next_v = (32'(vcnt) == V_TOTAL - 1) ? 9'd0 : vcnt + 9'd1;
+  wire [8:0] next_v = (vcnt == vlast) ? 9'd0 : vcnt + 9'd1;
 
   // Conditional late-kick predictor for lines 0 and 2 (see the kick
   // comment below). lk_hit[i] latches a CPU write to sy0 (0x78870) or
@@ -385,15 +397,15 @@ module i4220_vdp #(
       lk_hit  <= '0;
     end else begin
       rnd_start <= 1'b0;
-      if (ce_pix && hcnt == 9'd0 && 32'(vcnt) == V_TOTAL - 2)
+      if (ce_pix && hcnt == 9'd0 && vcnt == vlast - 9'd1)
         frame_par <= ~frame_par;
       // late-kick predictor bookkeeping
       if (sy_ramp_wr && hcnt < 9'd120) begin
-        if (32'(vcnt) == V_TOTAL - 1) lk_hit[0] <= 1'b1;
+        if (vcnt == vlast) lk_hit[0] <= 1'b1;
         if (vcnt == 9'd1)             lk_hit[1] <= 1'b1;
       end
       if (ce_pix && hcnt == 9'd120) begin
-        if (32'(vcnt) == V_TOTAL - 1) begin
+        if (vcnt == vlast) begin
           lk_pred[0] <= lk_hit[0];
           lk_hit[0]  <= 1'b0;
         end

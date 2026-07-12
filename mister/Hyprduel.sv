@@ -54,6 +54,7 @@ assign BUTTONS = 0;
     "-;",
     "O[5:3],Scandoubler Fx,None,HQ2x,CRT 25%,CRT 50%,CRT 75%;",
     "O[6],Test Pattern,Off,On;",
+    "O[7],Video Timing,Native 60.24Hz,60Hz Compat;",
     "-;",
     "DIP;",
     "-;",
@@ -204,6 +205,7 @@ assign BUTTONS = 0;
   wire signed [15:0] audio;
 
   hyprduel_sys #(.GFX_AW(22), .P_PIXDIV(12)) core (
+    .i_compat60(status[7]),
     .clk(clk_sys), .rst_n(~reset),
     .o_hs(hs), .o_vs(vs), .o_de(de), .o_ce_pix(ce_pix),
     .o_hblank(hbl), .o_vblank(vbl),

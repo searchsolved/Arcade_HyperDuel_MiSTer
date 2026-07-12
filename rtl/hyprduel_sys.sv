@@ -24,6 +24,9 @@ module hyprduel_sys #(
     // audio (signed mono mix, MAME weights: YM 0.80, OKI 0.57)
     output logic signed [15:0] o_audio,
 
+    // video timing: 0 = measured 60.24 Hz (261 lines), 1 = 60 Hz compat (262)
+    input  logic i_compat60,
+
     // inputs (active low), spec sec 6
     input  logic [15:0] i_p1p2,
     input  logic [15:0] i_system,
@@ -176,6 +179,7 @@ module hyprduel_sys #(
     .o_rom_req(o_rom_req), .o_rom_addr(o_rom_addr), .o_rom_len(o_rom_len),
     .i_rom_data(i_rom_data), .i_rom_valid(i_rom_valid),
     .i_gfx_size(i_gfx_size),
+    .i_compat60(i_compat60),
     .o_dbg_vdp_write(dbg_vdp_write),
     .o_dbg_line_start(dbg_line_start),
     .o_dbg_rnd_done(dbg_rnd_done),

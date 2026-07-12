@@ -52,6 +52,7 @@ module tb_vdp;
   // defined optimization menu (parallel layer/sprite engines, per-frame
   // sprite setup cache, multi-pixel emit).
   i4220_vdp #(.GFX_AW(GFX_AW), .P_PIXDIV(32)) dut (
+    .i_compat60(1'b0),
     .clk(clk), .rst_n(rst_n),
     .i_cs(cs), .i_addr(addr), .i_rnw(rnw), .i_be(be),
     .i_wdata(wdata), .o_rdata(rdata), .o_ack(ack),
