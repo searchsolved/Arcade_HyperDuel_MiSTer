@@ -116,18 +116,35 @@ cycle) - a long-standing MAME mystery ("many CRTC writes" TODO). Both
 MAME and this core ignore the register; the footage shows real
 hardware has no visible geometric response to it either.
 
-### 3.4 Resolved: heavy-scene line budget (2026-07-11)
+### 3.4 Heavy-scene line budget: measured-zero, provable bound in progress
 
 The real chip reads its graphics ROMs over a 64-bit bus; the MiSTer
 SDRAM stream is 16-bit. Our renderer compensates with a faster clock
 and pipelining: prescan sprite rejection with a pipelined table walk
-(1 cycle per rejected sprite), paired-pixel emit, fetch/emit overlap
-in both walk directions, and a background zoom divider. Measured
-result: zero over-budget lines across the 5,200-frame soak and the
-scripted worst-case gameplay test. The scan-out safety net (a late
-line shows background rather than stale data) remains in the design
-but no longer fires in any measured content; extended-content soaks
-(later stages) continue as regression tests.
+(1 cycle per rejected sprite, and the walk itself runs hidden under
+the previous sprite's ROM fill), paired-pixel emit, fetch/emit overlap
+in both walk directions, a background zoom divider, and tilemap
+map-word prefetch (the next tile's VRAM read issues during the current
+tile's pixel walk; same-code boundaries cost zero cycles).
+
+Measured (per-line envelope counters, 5,200-frame soak + scripted
+worst-case gameplay, 2026-07-12): zero over-budget lines; worst line
+4,678 of the 5,088 budget; worst tilemap-pass line 3,948; worst
+sprite-pass line 1,217; sprite fetch sustains 0.88 bytes/cycle under
+full SDRAM contention.
+
+Two honest caveats, and the roadmap they set:
+- Empirical zeros are configuration-specific: correcting the OKI clock
+  (an audio change) shifted SDRAM arbitration enough to move renderer
+  margins measurably. The end state is a PROVABLE bound - per-line
+  worst-case arithmetic that contains the real chip's fetch envelope
+  (~2,300 sprite bytes/line from the 64-bit bus) - not a passed test.
+  Remaining work: hide the tile-decode chain for changed tiles, and
+  one scene (the stage-7 boss, beyond attract-soak coverage) as a
+  permanent dumped-state regression.
+- The scan-out safety net (a late line shows background rather than
+  stale data) remains in the design and no longer fires in any
+  measured content.
 
 ### 3.5 Unverifiable without hardware instrumentation
 
