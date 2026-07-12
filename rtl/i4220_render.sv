@@ -289,15 +289,21 @@ module i4220_render #(
   logic [15:0] tileoffs;
   logic [4:0]  pix_x, pix_y;
 
-  // next-tile lookahead: the same derivation evaluated at the first x
-  // of the following tile, feeding the prefetch of its map word
-  logic [15:0] la_tileoffs;
-  logic [8:0]  la_x;
+  // next-tile lookahead, pipelined (the doubled address chain was the
+  // post-prefetch critical path). Key facts: the boundary x is
+  // tile-invariant, and at the staging trigger (pix_x == tsz-6) it is
+  // exactly xcur + 6 for both tile sizes; srcl is line-constant. So the
+  // x-chain is split: stage 1 registers the raw sum, stage 2 the
+  // window-masked source column, and the issue cycle only shifts/ors.
+  logic [31:0] la_resx_r;
+  logic [31:0] la_srcc_r;
+  logic [1:0]  la_ph;         // 0 idle, 1 after stage 1, 2 ready
+  logic [15:0] la_tileoffs;   // shallow: registered srcc + line-const srcl
+  logic [31:0] srcl_c;        // exported from the derivation below
 
   always_comb begin
     logic [31:0] winw_m, winh_m, big_m;
     logic [31:0] resx, resy, scx, scy, srcc, srcl;
-    logic [31:0] la_resx, la_scx, la_srcc;
     int ts;
     big  = i_screen_ctrl[5 + 32'(layer)];
     ts   = big ? 4 : 3;
@@ -309,6 +315,7 @@ module i4220_render #(
     resy = 32'(i_scroll_y[layer]) + 32'(line_r) - 32'(i_window_y[layer]);
     scy  = resy & winh_m;
     srcl = (32'(i_window_y[layer]) + scy) & big_m;
+    srcl_c = srcl;
 
     resx = 32'(i_scroll_x[layer]) + 32'(xcur) - 32'(i_window_x[layer]);
     scx  = resx & winw_m;
@@ -318,11 +325,9 @@ module i4220_render #(
     pix_x    = 5'(srcc) & (tsz - 5'd1);
     pix_y    = 5'(srcl) & (tsz - 5'd1);
 
-    la_x     = xcur + 9'(tsz - pix_x);
-    la_resx  = 32'(i_scroll_x[layer]) + 32'(la_x) - 32'(i_window_x[layer]);
-    la_scx   = la_resx & winw_m;
-    la_srcc  = (32'(i_window_x[layer]) + la_scx) & big_m;
-    la_tileoffs = 16'(((srcl >> ts) << 8) | (la_srcc >> ts));
+    la_tileoffs = big
+      ? 16'(((srcl_c >> 4) << 8) | (la_srcc_r >> 4))
+      : 16'(((srcl_c >> 3) << 8) | (la_srcc_r >> 3));
   end
 
   // map-word prefetch staging: issued mid-walk, tag-matched at the
@@ -405,6 +410,7 @@ module i4220_render #(
       f_end <= 1'b0;
       pf_valid <= 1'b0;
       pf_wait <= 1'b0;
+      la_ph <= 2'd0;
     end else begin
       o_done <= 1'b0;
       o_lb_we <= 1'b0;
@@ -461,6 +467,7 @@ module i4220_render #(
             prev_tileoffs <= {1'b0, tileoffs};
             pf_valid <= 1'b0;
             pf_wait  <= 1'b0;   // abandon any in-flight prefetch: an
+            la_ph    <= 2'd0;
             // early boundary (window wrap mid-tile) must not let the
             // counter capture the serial read under a stale tag
             if (pf_hit) begin
@@ -480,13 +487,26 @@ module i4220_render #(
               prev_tileoffs <= {1'b0, tileoffs};
               pf_valid <= 1'b0;
             end
-            // issue the next tile's map read while walking this one
-            if (pix_x == tsz - 5'd4 && la_x < 9'(WIDTH)) begin
+            // pipelined lookahead + issue of the next tile's map read:
+            // stage 1 (6 px before the boundary) registers the raw sum
+            // (the boundary x is exactly xcur + 6 at this trigger),
+            // stage 2 the window-masked column, then the shallow issue
+            if (pix_x == tsz - 5'd6 && (xcur + 9'd6) < 9'(WIDTH)) begin
+              la_resx_r <= 32'(i_scroll_x[layer]) + 32'(xcur) + 32'd6
+                         - 32'(i_window_x[layer]);
+              la_ph <= 2'd1;
+            end else if (la_ph == 2'd1 && pix_x == tsz - 5'd5) begin
+              la_srcc_r <= (32'(i_window_x[layer])
+                           + (la_resx_r & (big ? 32'h3FF : 32'h1FF)))
+                           & (big ? 32'hFFF : 32'h7FF);
+              la_ph <= 2'd2;
+            end else if (la_ph == 2'd2 && pix_x == tsz - 5'd4) begin
               o_vram_addr <= la_tileoffs;
               pf_tag  <= la_tileoffs;
               pf_cnt  <= 2'd0;
               pf_wait <= 1'b1;
               pf_valid <= 1'b0;
+              la_ph <= 2'd0;
             end else if (pf_wait) begin
               pf_cnt <= pf_cnt + 2'd1;
               if (pf_cnt == 2'd2) begin
@@ -519,6 +539,7 @@ module i4220_render #(
               cache_valid <= 1'b0;
               pf_valid <= 1'b0;
               pf_wait  <= 1'b0;
+              la_ph    <= 2'd0;
               if (layer == 2'd0) begin
                 scur   <= 10'd0;
                 scount <= {1'b0, i_spr_count[8:0]};   // count % 512
