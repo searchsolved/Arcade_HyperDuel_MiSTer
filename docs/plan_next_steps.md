@@ -93,3 +93,26 @@ Renderer changes additionally: bomb test + soak zero over-budget.
   + diagnostic characterisation running. v2 + G768 compile fired.
 - L4 (stage-7 MAME state dump) and R-phase items unchanged. MAME
   upstream note drafted (docs/mame_upstream_note.md) for Lee's review.
+
+## Additions 2026-07-12 evening (Lee's CRT verdict on v2g768)
+
+Verdict: stage-7 boss tearing GONE (first clean report ever); audio mix
+confirmed good at measured 2.5:1; bomb/bullet slowdown matches the real
+board's measured profile (38-47 Hz dips in the 1cc capture).
+
+- OPEN (P1): top-line clouds still visible in stage 2/4 GAMEPLAY. The
+  v2 conditional kick never engaged: its verification rotations never
+  played the ramp scenes (attract rotation is seeded from uninit RAM,
+  so it varies per build - sy_changed=0 was scene absence, not fix
+  success). Plan: (a) shear-scan the PCB videos at stages 2/4 to test
+  whether the real board shows the same top-line strip (if yes:
+  authentic, document and close); (b) seed-forced sim rotations
+  (+verilator+rand+reset+2 +verilator+seed+N) until a cloud scene
+  plays, then re-measure the write schedule under load and fix the
+  sampling point properly. Add a permanent "ramp scene actually
+  played" assertion to future soaks (count sy0/sy2 vblank writes).
+- NEW FEATURE (R-phase): high-score saving. MAME hiscore.dat entry
+  exists (maincpu program 0xFFF2A2 len 0x3C + flag byte 0xFFF2E2 -
+  lives in sharedram3 = our sr3 SDRAM region). Wire the MiSTer
+  framework hiscore module to a small sr3 access port; MRA gets the
+  hiscore data block.
