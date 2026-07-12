@@ -192,6 +192,43 @@ a logic analyser on a live board or a decap:
 
 Any core for this hardware, however written, shares this list.
 
+### 3.6 Measured, correction pending: refresh rate is 60.24 Hz, this core still ships 60.011 Hz
+
+Nobody had measured this board's refresh; MAME's 60 Hz is flagged
+unverified in its own history. Measured 2026-07-12 from the two
+independent PCB recordings, three methods that fail differently
+(full numbers in docs/plan_refresh_measurement.md):
+
+1. **Chain anchor**: the music tempo is YM-timer-paced (crystal), so
+   fitting the sim's audio against each recording calibrates that
+   recording chain's absolute clock to ~200 ppm (measured s = 1.00021
+   and 1.00017 - both captures are near-perfect).
+2. **Frame-counted script interval**: the game waits exactly 248
+   frames between the first title-jingle key-on and the announcer
+   trigger (frame-stamped MAME tap). Both recordings play that
+   interval 0.33-0.34% faster than our 60.011 Hz core: 60.20-60.23 Hz
+   after chain correction. The two recordings agree to 0.007%.
+3. **Electrical pickup**: both recordings contain the board's own
+   vertical-rate pickup as a narrow spectral line in silent segments
+   (SNR up to ~400): 60.236-60.250 Hz chain-corrected, second
+   harmonic at 120.48 Hz. Not mains: US grid is 60.000 +- ~0.02% and
+   its harmonic would sit at 120.00.
+
+All three select dot totals of 424 x 261 = 60.2408 Hz at the
+photo-verified 26.6660/4 MHz dot clock. Corroboration already in this
+repo's data: the game programs raster interrupts for exactly 261
+lines per frame; a 262nd line is never addressed, because it does not
+exist on hardware. Music/sample pitch are unaffected (crystal-clocked)
+- on real hardware the game simply runs 0.38% faster than its music
+would suggest.
+
+Status: the RTL still uses MAME's assumed 424 x 262 (60.011 Hz), so
+this core currently plays 0.38% slower than a real PCB. The one-line
+V_TOTAL correction is deliberately queued behind its own full
+re-verification ladder (the vblank write geometry shifts, so the
+raster freshness analysis in 3.3 must be redone against the new frame
+shape) rather than shipped as a rider on an audio build.
+
 ## 4. What we do NOT claim
 
 - Not "cycle-accurate": that term is unfalsifiable without silicon

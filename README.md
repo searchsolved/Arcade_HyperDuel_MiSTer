@@ -55,12 +55,32 @@ drops a scanline.
 **New information this project established** (none of it previously
 documented anywhere, to our knowledge):
 
+- **The refresh rate is 60.24 Hz, not 60 Hz.** MAME's 60 Hz carries an
+  unverified-comment lineage; nobody had measured it. Three independent
+  methods on two independent PCB recordings agree (details and numbers
+  in [docs/plan_refresh_measurement.md](docs/plan_refresh_measurement.md)):
+  (1) the music tempo is YM-timer-paced and crystal-locked, which
+  calibrates each recording chain's clock to ~200 ppm; (2) a
+  frame-counted game-script interval - exactly 248 frames between the
+  title jingle and the announcer, verified by a frame-stamped MAME tap -
+  plays 0.33% faster on hardware than at 60.011 Hz; (3) the board's own
+  vertical-rate **electrical pickup is visible as a spectral line in the
+  recordings' silent moments**: 60.24-60.25 Hz chain-corrected, second
+  harmonic at 120.48 Hz (US mains would be 60.000/120.00, regulated to
+  ~0.02%). All three select dot totals of 424 x 261 = 60.2408 Hz -
+  corroborated by the game itself, which programs raster interrupts for
+  exactly 261 lines and never addresses a 262nd.
 - **The OKI M6295 clock is 2.000 MHz** (4 MHz crystal / 2), measured
   from PCB footage by sample-pitch ratio to 0.05%. MAME's value
   (2.0625 MHz, marked `not verified` in its own source) is ~3% sharp -
   every emulator and port inherits slightly wrong sample pitch.
-- **The real mix balance**: samples peak at ~2.2x music RMS on the
-  board's line output; MAME plays samples roughly 3x hotter.
+- **The real sample-to-music mix balance is 2.5:1** (OKI vs YM2151
+  full-scale amplitude), measured from both recordings by per-frequency
+  -bin regression against the simulator's separately rendered channels,
+  a method that cancels each recording chain's EQ and was validated on
+  synthetic recordings of known mixes. MAME's current routing plays the
+  samples ~11 dB quieter than the real board. (Supersedes an earlier
+  envelope-based estimate that pointed the other way.)
 - **The game requests a raster interrupt on all 261 lines per frame
   and real timing services every one**; write-log comparison shows
   MAME missing ~14% of them (visible as stepped parallax).
@@ -76,10 +96,13 @@ documented anywhere, to our knowledge):
   effective update rate drops to ~38 Hz at the stage-6 boss and
   ~46-47 Hz in two other stretches - reproduced here for free by
   cycle-accurate CPUs, and now checkable rather than anecdotal.
-- Two further MAME-flagged unknowns remain open and measurable from
-  footage: the exact refresh rate (its 60 Hz is a guess; ours derives
-  60.01 Hz from the verified crystal) and the top-of-frame raster
-  phase behaviour (docs/ACCURACY.md section 3.3).
+- One MAME-flagged unknown remains open: the top-of-frame raster
+  phase behaviour (docs/ACCURACY.md section 3.3). The refresh-rate
+  correction (this core currently ships MAME's 262-line timing, 0.38%
+  slow) is queued behind its own re-verification pass, since it changes
+  game speed. A draft upstream note for MAME covering the clock,
+  refresh and balance corrections is in
+  [docs/mame_upstream_note.md](docs/mame_upstream_note.md).
 
 ## Architecture
 
