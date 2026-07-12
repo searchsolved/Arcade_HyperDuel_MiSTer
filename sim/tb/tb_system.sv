@@ -373,6 +373,18 @@ module tb_system;
   int          oki_first;
   initial oki_first = -1;
   int         rb_cyc, rb_max, rb_over, rb_over_frame, rb_late;
+  int         rb_late_vis, rb_late_maxh, rb_late_chg, late_fh;
+  logic [8:0] lk_nv;
+  logic [31:0] lk_snap [2];      // [0]=line0, [1]=line2 sy0/sy2 at h0
+  logic       lk_changed [2];
+  initial begin
+    string lpath;
+    late_fh = 0;
+    if ($value$plusargs("LATELOG=%s", lpath)) begin
+      late_fh = $fopen(lpath, "w");
+      $fwrite(late_fh, "frame,line,hcnt,sy_changed\n");
+    end
+  end
   int         st_flagA, st_flagB, st_busy;
   logic [7:0] st_last[16];         // last 16 status values returned
   int         st_lidx;
@@ -439,6 +451,33 @@ module tb_system;
     if (dut.u_vdp.rnd_done && dut.u_vdp.vcnt == {1'b0, dut.u_vdp.rnd_line} &&
         dut.u_vdp.hcnt > 9'd8)
       rb_late <= rb_late + 1;
+    // late-completion characterisation: resolve is the final 320-clk
+    // monotonic pass at 1 px/clk, beam consumes 1 px / 12 clk, so a
+    // completion at hcnt >= 28 means the beam already read pixels the
+    // resolver had not written (stale bank content on the left edge).
+    // Track whether sy0/sy2 changed between h0 and h120 of the kick line
+    // to evaluate a conditional (ramp-active-only) late kick.
+    if (dut.u_vdp.ce_pix && dut.u_vdp.hcnt == 9'd0) begin
+      lk_nv = (dut.u_vdp.vcnt == 9'd261) ? 9'd0 : dut.u_vdp.vcnt + 9'd1;
+      if (lk_nv == 9'd0 || lk_nv == 9'd2)
+        lk_snap[lk_nv[1]] <= {dut.u_vdp.r_scroll[0], dut.u_vdp.r_scroll[4]};
+    end
+    if (dut.u_vdp.ce_pix && dut.u_vdp.hcnt == 9'd120) begin
+      lk_nv = (dut.u_vdp.vcnt == 9'd261) ? 9'd0 : dut.u_vdp.vcnt + 9'd1;
+      if (lk_nv == 9'd0 || lk_nv == 9'd2)
+        lk_changed[lk_nv[1]] <=
+          lk_snap[lk_nv[1]] != {dut.u_vdp.r_scroll[0], dut.u_vdp.r_scroll[4]};
+    end
+    if (dut.u_vdp.rnd_done && dut.u_vdp.vcnt == {1'b0, dut.u_vdp.rnd_line} &&
+        dut.u_vdp.hcnt > 9'd8) begin
+      if (dut.u_vdp.hcnt >= 9'd28) rb_late_vis <= rb_late_vis + 1;
+      if (32'(dut.u_vdp.hcnt) > rb_late_maxh) rb_late_maxh <= 32'(dut.u_vdp.hcnt);
+      if (lk_changed[dut.u_vdp.rnd_line[1]]) rb_late_chg <= rb_late_chg + 1;
+      if (late_fh != 0)
+        $fwrite(late_fh, "%0d,%0d,%0d,%0d\n", frames_seen,
+                dut.u_vdp.rnd_line, dut.u_vdp.hcnt,
+                32'(lk_changed[dut.u_vdp.rnd_line[1]]));
+    end
     if (dut.u_vdp.rnd_busy) rb_cyc <= rb_cyc + 1;
     else begin
       if (rb_cyc > rb_max) rb_max <= rb_cyc;
@@ -680,6 +719,9 @@ module tb_system;
     $display("render: worst_line_cycles=%0d prescan_rejects=%0d over_budget_lines=%0d last_over_frame=%0d",
              rb_max, dut.u_vdp.u_render.dbg_pst_rej, rb_over, rb_over_frame);
     $display("render late_lines=%0d (completed mid-scanout)", rb_late);
+    $display("render late detail: beam_visible=%0d (hcnt>=28) max_hcnt=%0d sy_changed=%0d",
+             rb_late_vis, rb_late_maxh, rb_late_chg);
+    if (late_fh != 0) $fclose(late_fh);
     $display("render load: div_cycles=%0d ovl_stall_cycles=%0d",
              dut.u_vdp.u_render.dbg_div_cyc, dut.u_vdp.u_render.dbg_ovl_stall);
     $display("render envelope: tm_worst_line=%0d sp_worst_line=%0d fill_pulses=%0d fill_cycles=%0d (bytes/cyc=%0d.%02d)",

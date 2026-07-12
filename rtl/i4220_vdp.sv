@@ -254,6 +254,18 @@ module i4220_vdp #(
   wire line_start   = ce_pix && (32'(hcnt) == H_TOTAL - 1);
   wire [8:0] next_v = (32'(vcnt) == V_TOTAL - 1) ? 9'd0 : vcnt + 9'd1;
 
+  // Conditional late-kick predictor for lines 0 and 2 (see the kick
+  // comment below). lk_hit[i] latches a CPU write to sy0 (0x78870) or
+  // sy2 (0x78878) landing in the kick line's h<120 window; at h120 it
+  // hands off to lk_pred[i], which steers NEXT frame's kick point.
+  // Ramp scenes write every frame, so the predictor is wrong only for
+  // the single frame at a ramp's start or end.
+  wire sy_ramp_wr = reg_w && ((i_addr & 19'h7FFFE) == 19'h78870 ||
+                              (i_addr & 19'h7FFFE) == 19'h78878);
+  logic [1:0] lk_pred, lk_hit;
+  wire lk_late = (next_v == 9'd0 && lk_pred[0]) ||
+                 (next_v == 9'd2 && lk_pred[1]);
+
   // ------------------------------------------------------------------
   // IRQ cause events
   // ------------------------------------------------------------------
@@ -369,10 +381,27 @@ module i4220_vdp #(
       kf_rd <= '0;
       kf_cnt <= '0;
       frame_par <= 1'b0;
+      lk_pred <= '0;
+      lk_hit  <= '0;
     end else begin
       rnd_start <= 1'b0;
       if (ce_pix && hcnt == 9'd0 && 32'(vcnt) == V_TOTAL - 2)
         frame_par <= ~frame_par;
+      // late-kick predictor bookkeeping
+      if (sy_ramp_wr && hcnt < 9'd120) begin
+        if (32'(vcnt) == V_TOTAL - 1) lk_hit[0] <= 1'b1;
+        if (vcnt == 9'd1)             lk_hit[1] <= 1'b1;
+      end
+      if (ce_pix && hcnt == 9'd120) begin
+        if (32'(vcnt) == V_TOTAL - 1) begin
+          lk_pred[0] <= lk_hit[0];
+          lk_hit[0]  <= 1'b0;
+        end
+        if (vcnt == 9'd1) begin
+          lk_pred[1] <= lk_hit[1];
+          lk_hit[1]  <= 1'b0;
+        end
+      end
       // queue at the START of each line for the NEXT line: a full line of
       // render lead (banks are 2 bits, display is never within 1 of render).
       // EXCEPTION (measured, 2026-07-12): the game's raster-effect write
@@ -381,11 +410,15 @@ module i4220_vdp #(
       // kick at h0 samples lines 0 and 2 one phase EARLY (10-17 px of
       // vertical offset in effect scenes - the "clouds" artefact); every
       // other line lands within 1 px of the value real hardware uses. So
+      // WHEN THE RAMP IS LIVE (lk_pred, one-frame write predictor above)
       // lines 0 and 2 kick at h=120, after the write slot, trading their
-      // render lead 5088 -> 3648 cycles (top lines are historically
-      // light; the tb late-line counter watches for any consequence).
+      // render lead 5088 -> 3648 cycles. Scenes without sy0/sy2 raster
+      // writes keep the full h0 lead: an unconditional late kick was
+      // measured completing mid-scanout 1,357 times over a 5,200-frame
+      // soak in heavy stage-2 attract frames, putting stale left-edge
+      // pixels on screen (the tb late-line counters watch this).
       if (ce_pix &&
-          hcnt == ((next_v == 9'd0 || next_v == 9'd2) ? 9'd120 : 9'd0) &&
+          hcnt == (lk_late ? 9'd120 : 9'd0) &&
           32'(next_v) < V_VIS) begin
         if (kf_cnt == 3'd4) begin
           rnd_overrun <= 1'b1;                     // hopelessly behind

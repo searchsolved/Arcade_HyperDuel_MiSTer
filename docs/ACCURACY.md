@@ -66,7 +66,7 @@ Our core services all of them. We believe real silicon does not skip
 its own interrupts, and the PCB footage shows smooth parallax. We do
 NOT calibrate write timing against MAME here, deliberately.
 
-### 3.2 Resolved: OKI clock (measured); balance calibrated (one refinement open)
+### 3.2 Resolved: OKI clock and OKI:YM mix balance, both measured
 
 - **OKI clock = 2.000 MHz, measured from real hardware (2026-07-11).**
   Method: the title-screen announcer sample is identical ROM bytes on
@@ -78,37 +78,70 @@ NOT calibrate write timing against MAME here, deliberately.
   80/40 the re-measured ratio is 1.0000 (spectral corr 0.905).
   MAME's 2.0625 MHz (flagged "not verified" in their source) is
   therefore measurably ~3.1% sharp; sample rate is 15,151.5 Hz.
-- **Sample/music balance calibrated to the PCB line capture**: voice
-  peak / music RMS = 2.20 on hardware; our OKI mix gain was reduced
-  accordingly (457 -> 196 in the 8.8 fixed-point mixer). One
-  refinement open: the two recordings' attract cycles never fully
-  aligned, so the anchor windows are close but not identical music
-  passages; a matched-tune re-measure is planned. MAME's 0.57 OKI
-  route gain is ~3x hot against the hardware capture.
+- **OKI:YM mix ratio = 2.5:1, measured from two independent PCB
+  recordings (2026-07-12).** Method: the title jingle + announcer is
+  the one segment where a recording and the simulator play *identical*
+  content (deterministic from title start, before the player coins
+  up). The sim dumps its pre-mix YM and OKI channels separately; each
+  recording's power spectrogram is then regressed per STFT bin onto
+  the two sim channel spectrograms (non-negative least squares, plus a
+  noise-floor term). The per-bin coefficient on the YM channel absorbs
+  the entire unknown recording chain (speaker, capture EQ, codec), so
+  the coefficient ratio in each bin is chain-independent, and its
+  weighted median across ~550 bins gives one global OKI:YM amplitude
+  ratio. Recording A: 2.48. Recording B (different capture chain):
+  2.52. The estimator was validated end-to-end by synthesising fake
+  "recordings" from our own mix at known gains through a random EQ +
+  noise + delay: a 2.50-ratio synthetic recovers 2.512, a 0.98-ratio
+  synthetic recovers ~1.0. Mixer set to OKI x3.00 / YM x1.20
+  (= 2.5:1). This supersedes the 2026-07-11 estimate (which compared
+  envelope peak to RMS across unmatched windows with no EQ
+  cancellation and pointed the wrong way); by this measurement MAME's
+  0.57/0.80 routing is ~11 dB *quiet* on samples relative to the real
+  board.
 - YM level keeps the MAME stream calibration (x1.20); YM clocking is
   crystal-verified.
 
-### 3.3 Open: top-of-frame raster phase (lines 0-3), now fully characterised
+### 3.3 In progress: top-of-frame raster phase (lines 0-3), fix v1 has a heavy-scene regression
 
-Write-log analysis (2026-07-11) established exactly what the game
-does: during demo scenes it runs a per-line VERTICAL scroll ramp on
-layers 0 and 2 (regs sy0/sy2, one write pair per line), keeps the ramp
-running through every vblank line, then RESETS the effect's phase at
-the top of each frame (X seeds at line 0, Y ramp restarting at line 1
-several steps away from the vblank tail value). Our renderer works one
-line ahead of the beam, so lines 0-2 sample the old phase before the
-reset lands; lines 3+ track it one step late (sub-pixel, invisible).
-Net effect: the top few lines carry the previous phase during these
-scenes.
+Write-log analysis (2026-07-11/12) established exactly what the game
+does: during scenes with a per-line vertical scroll ramp on layers 0
+and 2 (regs sy0/sy2), it writes line N's ramp values during line N-1
+at h~70-100, keeps the ramp running through every vblank line, and
+parks the frame-start values at (vpos 261, h~75). A renderer that
+fetches each line's registers at h=0 of the previous line therefore
+samples lines 0 and 2 one ramp-phase early (measured staleness: 14-17
+lines of Y for line 0, ~11 for line 2), which showed on a CRT as a few
+rows of displaced cloud pixels at the top of stages 2 and 6. The real
+chip never shows this because it fetches just-in-time; a fetch that
+happens after h~100 of the previous line always sees fresh values.
 
-Whether real hardware differs is genuinely open: the fresh value for
-line 1 is written MID-line-1 on hardware too, so the real chip cannot
-have had it for that line's left edge either unless its internal fetch
-lead behaves in undocumented ways. The 1cc capture cannot adjudicate
-(HUD covers those lines in gameplay; the video contains no attract).
-Deliberately NOT "fixed": changing our render lead to guess at this
-would risk trading an understood deviation for an unknown one.
-Resolution needs attract-mode PCB footage or a logic analyser.
+Fix v1 (2026-07-12): the render kick for lines 0 and 2 only moves
+from h=0 to h=120 of the previous line, after the game's writes have
+landed. This reproduces the just-in-time property the write schedule
+proves the real chip relies on, and measured staleness deltas drop to
+0 on every top line (all within 1 px) with zero over-budget lines and
+zero mid-scanout completions over a 2,500-frame light-content soak.
+HOWEVER a 5,200-frame soak through the heavy stage-2 attract window
+found 1,357 mid-scanout completions on the late-kicked lines: their
+reduced 3,648-cycle lead is not always enough there, and a completion
+at hcnt >= 28 means the beam has already displayed stale line-buffer
+content on the left edge (the resolve pass is the final 320-clock
+left-to-right writer). Fix v1 is therefore NOT shipped as-is;
+characterisation of the offending frames (completion-hcnt
+distribution, whether the scroll values actually changed that frame)
+is running to choose between a conditional late kick (only when the
+ramp effect is live) and renderer throughput work that makes the
+3,648-cycle lead always sufficient.
+
+Known residual, plausibly authentic: the layer X seeds for line 0 are
+written DURING line 0 (h256-400), so lines 0-1 render with X scroll
+~2 px stale and line 3 is within +-1 px. The real chip cannot have had
+those values for those lines' left edges either unless its internal
+fetch lead behaves in undocumented ways; the 1cc captures cannot
+adjudicate (the HUD covers those lines in gameplay and neither video
+shows attract). Resolution needs attract-mode PCB footage or a logic
+analyser.
 
 Related finding: the game also writes a line-indexed value to the CRTC
 horizontal register on EVERY line, always (655k writes per attract

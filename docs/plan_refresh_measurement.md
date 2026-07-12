@@ -126,3 +126,83 @@ verified value, worth reporting upstream.
   exactly in simulation; audio timing is precise to samples, both
   videos contain seven stage clears each, and tallies never slow down.
   This supersedes E as the primary, with C anchoring the chain clock.
+
+## Field notes (2026-07-12, second pass): PRELIMINARY MEASUREMENT
+
+Method C implemented via onset-envelope time-stretch fitting between the
+crystal-exact sim audio and both recordings, over the two segments where
+content matches exactly:
+
+- Stage-1 tune (21 s baseline, music only, YM-timer paced):
+  s = 1.00021 (video A), 1.00017 (video B). The chain clocks of both
+  captures are therefore accurate to ~200 ppm and the YM/OKI crystal
+  clocking of the core matches hardware at that precision.
+- Title sequence (jingle + announcer, contains frame-counted script
+  events): s = 0.99590 on BOTH videos - a 0.4% disagreement that
+  cannot be a crystal or chain error (bounded above by the tune fit).
+
+Event-level follow-up: the delay from jingle-start to announcer-start
+is a frame-counted game-script interval. MAME tap (sim/mame/tap_ym.lua,
+build/title_tap2.txt): first jingle key-on at frame 1059, OKI voice
+trigger at frame 1306/1307 => N = 248 frames, a game-code constant.
+Measured wall-clock for that interval (identical envelope-edge
+estimators on sim and recordings, biases cancel in the ratio):
+
+    sim (60.0107 Hz core): 4.1148 s
+    video A:               4.1008 s   ratio 0.99660 -> 60.215 Hz
+    video B:               4.1018 s   ratio 0.99685 -> 60.201 Hz
+
+The two independent recordings agree to 0.3 ms over 4.1 s (0.007%).
+
+PRELIMINARY CONCLUSION: the real board's frame-scripted timing runs at
+~60.21 +- 0.03 Hz, NOT the 60.011 Hz produced by the assumed
+424 x 262 dot totals. Nearest candidate totals at the fixed
+6.6665 MHz pixel clock: 424 x 261 = 60.241 Hz (+0.05% above the
+estimate, ~2 sigma) or 423 x 262 = 60.156 Hz (-0.09%, ~3 sigma).
+Music tempo is YM-timer paced (confirmed by the tune fit staying
+crystal-locked), so gameplay pace and music tempo drift on real
+hardware; our current core plays the game ~0.33% slower than a real
+PCB but with identical audio.
+
+NOT yet applied to RTL: the plan's own criterion requires an
+independent method to agree first. Next: method A (scroll slope) on
+post-boss flyoff segments to pick between 261-line and 423-dot
+hypotheses, and/or matched-filter edge refinement to shrink the
++-0.03 Hz band; then V_TOTAL/H_TOTAL correction + full re-verify
+ladder (line budget changes if H_TOTAL changes; only vblank length
+changes if V_TOTAL=261).
+
+## Field notes (2026-07-12, third pass): method G, electrical pickup
+
+The recordings contain the board's own vertical-rate electrical pickup
+as a narrow spectral line during silence (audio ground pickup of frame
+-rate load; NOT mains: the line sits at 60.22-60.24 with its second
+harmonic at 120.48, while US mains is 60.00/120.00 and is regulated to
++-0.04%; both videos, from different venues/chains, show the same
+line). Line frequencies, chain-corrected via the tune-fit anchor:
+
+    video A  1335-1346s (11.3s, SNR 174): 60.2375 -> 60.2502 Hz
+    video B     0-10s   ( 9.9s, SNR  36): 60.2260 -> 60.2362 Hz
+    video B  1360-1366s ( 6.8s, SNR  59): 60.2382 -> 60.2485 Hz
+    (two shorter/weaker windows at 60.14 and 60.32 bracket these)
+
+Combined with the frame-scripted event-delay ratios (60.213-60.227
+corrected), three methods that fail differently now agree:
+
+    REFRESH = 60.24 +- 0.01 Hz  (photographed-crystal-anchored)
+    => dot totals 424 x 261 = 60.2408 Hz (exact-match candidate)
+    MAME's assumed 424 x 262 = 60.0107 Hz is excluded by >20 sigma.
+
+Corroboration already in the repo: the game services exactly 261
+raster IRQ lines per frame in our core - the 262nd line was never
+addressed by the game because it does not exist on hardware.
+
+Remaining before RTL change: none of the methods disagree, so the
+plan's criterion is met; the change is V_TOTAL 262 -> 261 in
+rtl/i4220_vdp.sv (vcnt wrap 261 -> 260, kick-line vpos arithmetic,
+tb probes that hardcode 261/262) followed by the full re-verify
+ladder (blit/render/vdp parity, raster freshness - the game's vblank
+write positions shift one line - soak, MAME lockstep with MAME left
+at its own 60.011, STA unaffected). Note the game speed increases
+0.38%; audio (YM/OKI crystal-clocked) is unaffected; the top-line
+freshness analysis MUST be redone against the new frame geometry.

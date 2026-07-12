@@ -253,10 +253,17 @@ module hyprduel_sys #(
     ymm  = (26'(ym_xl) + 26'(ym_xr)) >>> 1;
     ymm  = (ymm * 26'sd307) >>> 8;              // x1.20
     okim = (26'(oki_snd) <<< 2);
-    okim = (okim * 26'sd300) >>> 8;             // x1.17 (ear-calibration
-    // step: 196 from the PCB capture read too quiet on the CRT; the
-    // capture windows were imperfectly matched - bisecting with Lee's
-    // ears against real-cab memory, proper matched-tune measure pending)
+    okim = (okim * 26'sd768) >>> 8;             // x3.00: MEASURED from two
+    // independent PCB recordings. Method: per-STFT-bin NNLS of the
+    // recording's power spectrum onto the sim's pre-gain YM and OKI taps
+    // over the title jingle + announcer (identical content, pre coin-up);
+    // the per-bin EQ coefficient cancels the recording chain, leaving one
+    // global OKI:YM amplitude ratio. Video A a=2.48, video B a=2.52
+    // (G = 307*a). Estimator validated: a synthetic G=768 mix through a
+    // random EQ + noise recovers a=2.512; G=300 recovers ~1.0. MAME's
+    // 0.57/0.80 routing (~a=0.71) is ~11 dB quieter than the real board.
+    // Overflow: |oki<<2|*768 = 25.2M < 2^25; clamp catches rare peaks
+    // (0.0007% of samples over 41.7 s of sim audio).
     mix  = ymm + okim;
     if (mix > 26'sd32767)       o_audio = 16'sd32767;
     else if (mix < -26'sd32768) o_audio = -16'sd32768;
