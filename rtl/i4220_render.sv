@@ -187,6 +187,11 @@ module i4220_render #(
   // emit as soon as its highest source byte has landed
   logic [1:0]  seed_ph;          // 0,1 = seeding; 2 = accumulators ready
   logic        emit_done;
+  // scan-ahead: while OVL drains sprite k, the list scan for k+1..
+  // continues (1 cycle per prescan reject) and PARKS on the first
+  // accepted sprite (or list end); the drain exit then jumps straight
+  // to the parked sprite's attribute reads, hiding the scan tax
+  logic        f_parked, f_end;
   logic [23:0] dx_q, dy_q;
   logic [11:0] rowsel_q;           // pipelined row selection for ROM addr
   logic [35:0] yidx_q;             // pipelined zoom-scaled row index
@@ -352,8 +357,9 @@ module i4220_render #(
     // word only on a cycle that actually advances, else hold the current
     // word so spr_q stays coherent with the word being merged
     spr_raddr = (st == ST_S_OVL)
-                ? (s_emit_ok ? (sattr[15] ? (wcur - 8'd1) : (wcur + 8'd1))
-                             : wcur)
+                ? (emit_done ? 8'(xtrack >> 1)
+                   : s_emit_ok ? (sattr[15] ? (wcur - 8'd1) : (wcur + 8'd1))
+                               : wcur)
               : (st == ST_S_RD1 || st == ST_S_RD2 || st == ST_S_RD3 ||
                  st == ST_S_RD4 || st == ST_S_ZOOM || st == ST_S_COVER ||
                  st == ST_S_COVER2 ||
@@ -374,6 +380,8 @@ module i4220_render #(
       o_rom_req <= 1'b0;
       did_init <= 1'b0;
       div_bg <= 1'b0;
+      f_parked <= 1'b0;
+      f_end <= 1'b0;
     end else begin
       o_done <= 1'b0;
       o_lb_we <= 1'b0;
@@ -731,6 +739,13 @@ module i4220_render #(
           o_rom_len  <= s_bpp8 ? sw_pix : (sw_pix >> 1);
           o_rom_req  <= 1'b1;
           rx2 <= 7'd0;
+          // hand the list scan to the OVL scan-ahead: advance past this
+          // sprite and keep the table-pointer invariant (addr two ahead
+          // of the sprite the next check will examine)
+          scur <= scur + 10'd1;
+          o_pst_addr <= slot_of(scur + 10'd2);
+          f_parked <= 1'b0;
+          f_end    <= 1'b0;
           // fold the pair-walk setup and flip-adjusted start index in
           // here (formerly GRCV-end + PRIME); none of it needs ROM data.
           // x-flipped sprites walk descending: start at the sxh-side pair
@@ -765,6 +780,21 @@ module i4220_render #(
             srowcache[rx2[5:0]]         <= i_rom_data[15:8];
             srowcache[{rx2[5:1], 1'b1}] <= i_rom_data[7:0];
             rx2 <= rx2 + 7'd2;
+          end
+          // scan-ahead: walk the list toward the next accepted sprite
+          // while the drain runs; park on accept (arming its word-0
+          // address) or on list end
+          if (!f_parked) begin
+            if (scur == scount) begin
+              f_parked <= 1'b1;
+              f_end    <= 1'b1;
+            end else if (pst_reject) begin
+              scur <= scur + 10'd1;
+              o_pst_addr <= slot_of(scur + 10'd2);
+            end else begin
+              f_parked <= 1'b1;
+              o_spr_addr <= {slot_of(scur), 2'd0};
+            end
           end
           // seed: the anchor is the first visible pixel of the walk
           // (sxl when ascending, sxh-1 when descending); its half gets
@@ -812,11 +842,12 @@ module i4220_render #(
             if (wcur == w_end) emit_done <= 1'b1;
             else wcur <= sattr[15] ? (wcur - 8'd1) : (wcur + 8'd1);
           end
-          if (emit_done && s_fill_done) begin
-            scur <= scur + 10'd1;
-            o_pst_addr <= slot_of(scur + 10'd2);
-            st <= ST_S_CHK;
-          end
+          // exit only once the scan has parked: straight to the parked
+          // sprite's reads (its accept decision was already made here),
+          // or to resolve at list end. scur/o_pst_addr are already
+          // positioned by the scan.
+          if (emit_done && s_fill_done && f_parked)
+            st <= f_end ? ST_RESOLVE : ST_S_RD1;
         end
 
         // ---------------- resolve ----------------
@@ -859,7 +890,8 @@ module i4220_render #(
   logic [31:0] dbg_pst_rej;
   always_ff @(posedge clk) begin
     if (!rst_n) dbg_pst_rej <= '0;
-    else if (st == ST_S_CHK && scur != scount && pst_reject)
+    else if ((st == ST_S_CHK || (st == ST_S_OVL && !f_parked)) &&
+             scur != scount && pst_reject)
       dbg_pst_rej <= dbg_pst_rej + 1;
   end
 
@@ -876,6 +908,45 @@ module i4220_render #(
       if (st == ST_S_DIV) dbg_div_cyc <= dbg_div_cyc + 1;
       if (st == ST_S_OVL && !s_emit_ok && !emit_done)
         dbg_ovl_stall <= dbg_ovl_stall + 1;
+    end
+  end
+
+  // worst-case envelope measurement (2026-07-11 arithmetic): per-line
+  // cycle split between the tilemap passes and the sprite pass, worst
+  // line of each recorded; plus the sustained sprite fill rate under
+  // real SDRAM contention (valid pulses vs fill-active OVL cycles)
+  logic [31:0] dbg_tm_cyc, dbg_sp_cyc, dbg_tm_max, dbg_sp_max;
+  logic [31:0] dbg_fill_cyc, dbg_fill_pulse;
+  wire dbg_in_tm = (st == ST_L_PIX || st == ST_L_VR0 || st == ST_L_VR1 ||
+                    st == ST_L_VR2 || st == ST_L_VR3 || st == ST_L_TT1 ||
+                    st == ST_L_TT2 || st == ST_L_TT3 || st == ST_L_TT3B ||
+                    st == ST_L_GRCV);
+  wire dbg_in_sp = (st == ST_S_PST0 || st == ST_S_PST1 || st == ST_S_CHK ||
+                    st == ST_S_RD1 || st == ST_S_RD2 || st == ST_S_RD3 ||
+                    st == ST_S_RD4 || st == ST_S_ZOOM || st == ST_S_COVER ||
+                    st == ST_S_COVER2 || st == ST_S_DIV || st == ST_S_GREQ ||
+                    st == ST_S_GMUL || st == ST_S_GISS || st == ST_S_OVL);
+  always_ff @(posedge clk) begin
+    if (!rst_n) begin
+      dbg_tm_cyc <= '0; dbg_sp_cyc <= '0;
+      dbg_tm_max <= '0; dbg_sp_max <= '0;
+      dbg_fill_cyc <= '0; dbg_fill_pulse <= '0;
+    end else begin
+      if (st == ST_IDLE && i_start) begin
+        dbg_tm_cyc <= '0;
+        dbg_sp_cyc <= '0;
+      end else begin
+        if (dbg_in_tm) dbg_tm_cyc <= dbg_tm_cyc + 1;
+        if (dbg_in_sp) dbg_sp_cyc <= dbg_sp_cyc + 1;
+      end
+      if (o_done) begin
+        if (dbg_tm_cyc > dbg_tm_max) dbg_tm_max <= dbg_tm_cyc;
+        if (dbg_sp_cyc > dbg_sp_max) dbg_sp_max <= dbg_sp_cyc;
+      end
+      if (st == ST_S_OVL && !s_fill_done) begin
+        dbg_fill_cyc <= dbg_fill_cyc + 1;
+        if (i_rom_valid) dbg_fill_pulse <= dbg_fill_pulse + 1;
+      end
     end
   end
 

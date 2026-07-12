@@ -669,6 +669,11 @@ module tb_system;
              rb_max, dut.u_vdp.u_render.dbg_pst_rej, rb_over, rb_over_frame);
     $display("render load: div_cycles=%0d ovl_stall_cycles=%0d",
              dut.u_vdp.u_render.dbg_div_cyc, dut.u_vdp.u_render.dbg_ovl_stall);
+    $display("render envelope: tm_worst_line=%0d sp_worst_line=%0d fill_pulses=%0d fill_cycles=%0d (bytes/cyc=%0d.%02d)",
+             dut.u_vdp.u_render.dbg_tm_max, dut.u_vdp.u_render.dbg_sp_max,
+             dut.u_vdp.u_render.dbg_fill_pulse, dut.u_vdp.u_render.dbg_fill_cyc,
+             (64'd200 * 64'(dut.u_vdp.u_render.dbg_fill_pulse) / (64'(dut.u_vdp.u_render.dbg_fill_cyc) + 1)) / 100,
+             (64'd200 * 64'(dut.u_vdp.u_render.dbg_fill_pulse) / (64'(dut.u_vdp.u_render.dbg_fill_cyc) + 1)) % 100);
     for (int i = 0; i < okiw_n; i++)
       $display("  OKIW f=%0d val=%02x", okiw_log[i][23:8], okiw_log[i][7:0]);
     for (int i = 0; i < okir_n; i++)
