@@ -589,6 +589,7 @@ module tb_system;
   initial begin : run
     string gfxpath, outdir;
     int total_frames, dump_every, last_dumped;
+    int dump_from, dump_to;
 
     begin
       string mrpath, okrpath;
@@ -600,6 +601,10 @@ module tb_system;
     if (!$value$plusargs("OUTDIR=%s", outdir))  $fatal(1, "need +OUTDIR=");
     if (!$value$plusargs("FRAMES=%d", total_frames)) total_frames = 360;
     if (!$value$plusargs("DUMPEVERY=%d", dump_every)) dump_every = 60;
+    // +DUMPFROM/+DUMPTO: additionally dump EVERY frame in [from, to]
+    // (blink-constant measurement etc.)
+    if (!$value$plusargs("DUMPFROM=%d", dump_from)) dump_from = -1;
+    if (!$value$plusargs("DUMPTO=%d",   dump_to))   dump_to   = -1;
     if (!$value$plusargs("GFXSIZE=%d", gfx_size)) gfx_size = 1 << GFX_AW;
 
     $readmemh(gfxpath, gfxrom);
@@ -625,7 +630,9 @@ module tb_system;
     last_dumped = 0;
     while (frames_seen < total_frames) begin
       @(posedge clk);
-      if (frames_seen >= last_dumped + dump_every) begin
+      if (frames_seen >= last_dumped + dump_every ||
+          (frames_seen > last_dumped &&
+           frames_seen >= dump_from && frames_seen <= dump_to)) begin
         last_dumped = frames_seen;
         dump_frame(outdir, frames_seen);
         if (frames_seen == 510 || frames_seen == 750) dump_state(outdir, frames_seen);

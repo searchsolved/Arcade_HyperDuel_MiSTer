@@ -105,3 +105,24 @@ verified value, worth reporting upstream.
    BUDGET changes with H_TOTAL - the renderer margins must be
    re-measured)
 4. Upstream note to MAME either way (their comment invites it)
+
+## Field notes (2026-07-12, first implementation pass)
+
+- Method A on stage-1: the star field scrolls sub-pixel per frame -
+  too slow. Faster stages are slowdown-polluted, and slowdown is
+  indistinguishable from cadence duplicates in aggregate: A needs a
+  provably slowdown-free fast-scroll window (post-boss flyoffs are
+  candidates).
+- Method B: confirmed slowdown-dominated in this game; secondary only.
+- Method C: naive beat extraction picks different beat multiples per
+  source; needs onset-PATTERN time-scale matching (the OKI-pitch
+  technique in the tempo domain) on the same tune.
+- Method E (title blink): DEAD - Hyper Duel's PRESS START does not
+  blink, and both available captures run FREE PLAY (no blinking coin
+  text).
+- NEW best candidate, method F: the stage-clear bonus tally ticks its
+  counter at a fixed frames-per-tick rate with a tick sound per step.
+  Tick rate in the AUDIO track = f_native / k_tick, k_tick measurable
+  exactly in simulation; audio timing is precise to samples, both
+  videos contain seven stage clears each, and tallies never slow down.
+  This supersedes E as the primary, with C anchoring the chain clock.
