@@ -374,8 +374,19 @@ module i4220_vdp #(
       if (ce_pix && hcnt == 9'd0 && 32'(vcnt) == V_TOTAL - 2)
         frame_par <= ~frame_par;
       // queue at the START of each line for the NEXT line: a full line of
-      // render lead (banks are 2 bits, display is never within 1 of render)
-      if (ce_pix && hcnt == 9'd0 && 32'(next_v) < V_VIS) begin
+      // render lead (banks are 2 bits, display is never within 1 of render).
+      // EXCEPTION (measured, 2026-07-12): the game's raster-effect write
+      // schedule parks the frame-start scroll values at ~h75 of line 261
+      // and writes line N's per-line values at ~h70-100 of line N-1. A
+      // kick at h0 samples lines 0 and 2 one phase EARLY (10-17 px of
+      // vertical offset in effect scenes - the "clouds" artefact); every
+      // other line lands within 1 px of the value real hardware uses. So
+      // lines 0 and 2 kick at h=120, after the write slot, trading their
+      // render lead 5088 -> 3648 cycles (top lines are historically
+      // light; the tb late-line counter watches for any consequence).
+      if (ce_pix &&
+          hcnt == ((next_v == 9'd0 || next_v == 9'd2) ? 9'd120 : 9'd0) &&
+          32'(next_v) < V_VIS) begin
         if (kf_cnt == 3'd4) begin
           rnd_overrun <= 1'b1;                     // hopelessly behind
           o_dbg_ovr <= o_dbg_ovr + 16'd1;

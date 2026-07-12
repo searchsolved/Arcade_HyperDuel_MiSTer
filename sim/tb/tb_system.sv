@@ -372,7 +372,7 @@ module tb_system;
   longint      oki_nz;
   int          oki_first;
   initial oki_first = -1;
-  int         rb_cyc, rb_max, rb_over, rb_over_frame;
+  int         rb_cyc, rb_max, rb_over, rb_over_frame, rb_late;
   int         st_flagA, st_flagB, st_busy;
   logic [7:0] st_last[16];         // last 16 status values returned
   int         st_lidx;
@@ -434,6 +434,11 @@ module tb_system;
     if (dut.s_iack && dut.s_a[3:1] == 3'd2) s_iack2_cnt <= s_iack2_cnt + 1;
     if (!dut.ym_irq_n) ymirq_seen <= ymirq_seen + 1;
     // renderer line-budget probe (budget = 424 * PIXDIV clocks per line)
+    // visible-artefact counter: a line completing while its own scan-out
+    // row is already displaying showed background on its left portion
+    if (dut.u_vdp.rnd_done && dut.u_vdp.vcnt == {1'b0, dut.u_vdp.rnd_line} &&
+        dut.u_vdp.hcnt > 9'd8)
+      rb_late <= rb_late + 1;
     if (dut.u_vdp.rnd_busy) rb_cyc <= rb_cyc + 1;
     else begin
       if (rb_cyc > rb_max) rb_max <= rb_cyc;
@@ -674,6 +679,7 @@ module tb_system;
       $display("oki sdram: data_mismatches=%0d max_ok_latency=%0d", oki_mism, oki_maxlat);
     $display("render: worst_line_cycles=%0d prescan_rejects=%0d over_budget_lines=%0d last_over_frame=%0d",
              rb_max, dut.u_vdp.u_render.dbg_pst_rej, rb_over, rb_over_frame);
+    $display("render late_lines=%0d (completed mid-scanout)", rb_late);
     $display("render load: div_cycles=%0d ovl_stall_cycles=%0d",
              dut.u_vdp.u_render.dbg_div_cyc, dut.u_vdp.u_render.dbg_ovl_stall);
     $display("render envelope: tm_worst_line=%0d sp_worst_line=%0d fill_pulses=%0d fill_cycles=%0d (bytes/cyc=%0d.%02d)",
