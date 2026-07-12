@@ -78,3 +78,18 @@ Every RTL change: 22-check parity suite green before any hardware build.
 Every hardware build: STA setup slack positive on every clock (seed
 sweep 2..5 as needed). Every deploy: CRT-protect with sonic.mgl first.
 Renderer changes additionally: bomb test + soak zero over-budget.
+
+## Status update 2026-07-12 afternoon
+
+- A1 (matched-tune balance) DONE, superseded by a stronger method: mix
+  measured 2.5:1 from both recordings (ACCURACY 3.2), G=768 in RTL.
+- NEW: refresh measured ~60.24 Hz (plan_refresh_measurement.md) - the
+  60 Hz question is answered defensively; V_TOTAL 262 -> 261 is a
+  pending accuracy fix with its own ladder (freshness analysis redone,
+  full parity + soak; game speed +0.38%). Schedule after v2 ships.
+- NEW BLOCKER RESOLVED IN FLIGHT: unconditional late kick regressed
+  heavy stage-2 frames (1,357 mid-scanout completions / 5,200fr soak);
+  conditional late-kick v2 (lk_pred) passed parity 22/22, stage-2 soak
+  + diagnostic characterisation running. v2 + G768 compile fired.
+- L4 (stage-7 MAME state dump) and R-phase items unchanged. MAME
+  upstream note drafted (docs/mame_upstream_note.md) for Lee's review.
