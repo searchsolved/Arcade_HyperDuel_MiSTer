@@ -151,3 +151,37 @@ deploy; STA all-clocks-positive gate before any RBF reaches Lee;
 never claim a fix without a measurement that exercised it (today's
 clouds lesson). Lee's standing preference: technical claims need
 receipts; no em dashes in any output; commit+push when verified.
+
+## UPDATE 2026-07-13: clouds still present on CRT, DIP switches broken
+
+### Clouds
+V261 build deployed and tested: clouds STILL PRESENT on stages 2/6
+despite the predictor being verified working in simulation (seed 11:
+1,673 ramp frames late-kicked, freshness perfect on all 1,414
+checked). The fix works for Y-scroll but the VISIBLE artifact is
+likely the X-SCROLL component:
+
+- Original characterisation (ACCURACY.md 3.3) noted X seeds for
+  line 0 are written DURING line 0 at h256-400 - well AFTER both the
+  h=0 and h=120 kick points.
+- The late kick only addresses the Y-scroll staleness (writes at
+  h32-58 on the kick line, before h=120). X-scroll staleness is
+  structural: there is NO kick point late enough to catch h256-400
+  writes without losing the entire render budget.
+- Next session: verify this by examining ALL scroll register writes
+  (0x78870-0x7887B, all 6 regs) from the seed-11 raster log, and
+  determine whether the artifact Lee sees is horizontal (X-scroll)
+  or vertical (Y-scroll) displacement. If X: the fix requires
+  either a mid-line scroll latch (sample X registers live during
+  scan-out, not at kick time) or accepting the residual as
+  unfixable without per-pixel register sampling (which the real
+  chip does inherently via its internal pipeline).
+
+### DIP switches
+Free Play DIP does not work. Check:
+1. MRA DIP definition vs MAME hyprduel.cpp INPUT_PORTS_START section
+2. The DSW port wiring in mister/Hyprduel.sv -> hyprduel_sys i_dsw
+3. Polarity: MAME may use active-high while MiSTer DIPs are
+   active-low (or vice versa) - check PORT_DIPNAME entries
+4. The tb_system hardcodes i_dsw to 16'hFFBF (bit 6 = demo sounds)
+   - verify this matches MAME's default
