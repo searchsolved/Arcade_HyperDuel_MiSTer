@@ -221,12 +221,33 @@ module i4220_vdp #(
   logic [15:0] rs_scroll_y [3];
   logic [15:0] rs_window_x [3];
   logic [15:0] rs_window_y [3];
+  // Frame-global scroll freshness for lines 0-1 (MEASURED, seed-11
+  // raster log): the game writes sx0/sy1/sx1/sx2 once per frame during
+  // line 0 (h59-340), after lines 0 and 1 have already kicked, so those
+  // two lines render one frame stale - up to 7 px of horizontal offset
+  // on the fast layer (the "torn clouds" strip; PCB footage shows the
+  // real chip's just-in-time fetch keeps its top lines aligned). The
+  // ramp is linear, so the incoming value is known at kick time:
+  // pred = cur + (cur - prev). Latched at the line-0 kick, presented to
+  // the renderer for lines 0-1 only; a ramp start/stop mispredicts for
+  // exactly one frame on two lines, which is where the permanent error
+  // used to live. sy0/sy2 are per-line ramped and handled by the
+  // conditional late kick instead (lk_pred above).
+  logic [15:0] prev_fg [6];   // pre-write shadow of each scroll reg
+  logic [15:0] pred_fg [6];   // predicted frame-global values (idx 1,2,3,5)
+  wire rnd_topline = rnd_busy && (rnd_line < 8'd2);
   always_comb begin
     for (int l = 0; l < 3; l++) begin
       rs_window_y[l] = r_window[l*2 + 0];
       rs_window_x[l] = r_window[l*2 + 1];
       rs_scroll_y[l] = r_scroll[l*2 + 0];
       rs_scroll_x[l] = r_scroll[l*2 + 1];
+    end
+    if (rnd_topline) begin
+      rs_scroll_x[0] = pred_fg[1];
+      rs_scroll_y[1] = pred_fg[2];
+      rs_scroll_x[1] = pred_fg[3];
+      rs_scroll_x[2] = pred_fg[5];
     end
   end
 
@@ -395,6 +416,7 @@ module i4220_vdp #(
       frame_par <= 1'b0;
       lk_pred <= '0;
       lk_hit  <= '0;
+      for (int i = 0; i < 6; i++) pred_fg[i] <= '0;
     end else begin
       rnd_start <= 1'b0;
       if (ce_pix && hcnt == 9'd0 && vcnt == vlast - 9'd1)
@@ -439,6 +461,9 @@ module i4220_vdp #(
           kick_fifo[kf_wr] <= {frame_par, next_v};
           kf_wr <= kf_wr + 2'd1;
           kf_push = 1'b1;
+          if (next_v == 9'd0)
+            for (int i = 0; i < 6; i++)
+              pred_fg[i] <= r_scroll[i] + (r_scroll[i] - prev_fg[i]);
         end
       end
       if (kf_cnt != 0 && !rnd_busy && !rnd_start) begin
@@ -871,9 +896,12 @@ module i4220_vdp #(
             if (i_addr >= 19'h78860 && i_addr < 19'h7886C)
               r_window[3'((i_addr - 19'h78860) >> 1)]
                 <= comb16(r_window[3'((i_addr - 19'h78860) >> 1)]);
-            else if (i_addr >= 19'h78870 && i_addr < 19'h7887C)
+            else if (i_addr >= 19'h78870 && i_addr < 19'h7887C) begin
               r_scroll[3'((i_addr - 19'h78870) >> 1)]
                 <= comb16(r_scroll[3'((i_addr - 19'h78870) >> 1)]);
+              prev_fg[3'((i_addr - 19'h78870) >> 1)]
+                <= r_scroll[3'((i_addr - 19'h78870) >> 1)];
+            end
             else if (i_addr >= 19'h78840 && i_addr < 19'h7884E) begin
               blit_regs[3'((i_addr - 19'h78840) >> 1)]
                 <= comb16(blit_regs[3'((i_addr - 19'h78840) >> 1)]);

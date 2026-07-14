@@ -337,7 +337,7 @@ assign BUTTONS = 0;
       s_bank        <= dbg_bank;
       s_sums        <= dbg_sums;
       s_sumb1       <= dbg_ovr;      // overrun count (repurposed row)
-      s_sumb2       <= p1p2;         // live input word (repurposed row)
+      s_sumb2       <= dsw;          // live DSW word (DIP debug, was p1p2)
       // band 8 = lb_nonzero: renderer ever produced a non-black pixel
       // (download liveness is proven by the DLCT/DLWR rows instead)
       s_flags       <= {led_mrom_saw, dbg_vdp_cs_seen, dbg_vdp_write,

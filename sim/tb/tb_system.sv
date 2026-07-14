@@ -380,6 +380,7 @@ module tb_system;
   initial oki_first = -1;
   int         rb_cyc, rb_max, rb_over, rb_over_frame, rb_late;
   int         rb_late_vis, rb_late_maxh, rb_late_chg, late_fh;
+  int         fg_pred_exact, fg_pred_miss, fg_pred_maxerr;
   logic [8:0] lk_nv;
   logic [31:0] lk_snap [2];      // [0]=line0, [1]=line2 sy0/sy2 at h0
   logic       lk_changed [2];
@@ -473,6 +474,25 @@ module tb_system;
       if (lk_nv == 9'd0 || lk_nv == 9'd2)
         lk_changed[lk_nv[1]] <=
           lk_snap[lk_nv[1]] != {dut.u_vdp.r_scroll[0], dut.u_vdp.r_scroll[4]};
+    end
+    // frame-global scroll prediction accuracy: at each fg write during
+    // line 0, the value should equal what pred_fg gave lines 0/1.
+    if (dut.u_vdp.reg_w && dut.u_vdp.vcnt == 9'd0 &&
+        (dut.u_vdp.i_addr & 19'h7FFFE) inside {19'h78872, 19'h78874, 19'h78876, 19'h7887A}) begin
+      automatic logic [2:0] fgi = 3'((dut.u_vdp.i_addr - 19'h78870) >> 1);
+      automatic logic [15:0] newv =
+        {dut.u_vdp.i_be[1] ? dut.u_vdp.i_wdata[15:8] : dut.u_vdp.r_scroll[fgi][15:8],
+         dut.u_vdp.i_be[0] ? dut.u_vdp.i_wdata[7:0]  : dut.u_vdp.r_scroll[fgi][7:0]};
+      automatic int err;
+      err = int'(newv) - int'(dut.u_vdp.pred_fg[fgi]);
+      if (err > 32768) err -= 65536;
+      if (err < -32768) err += 65536;
+      if (err == 0) fg_pred_exact <= fg_pred_exact + 1;
+      else begin
+        fg_pred_miss <= fg_pred_miss + 1;
+        if (err < 0) err = -err;
+        if (err > fg_pred_maxerr) fg_pred_maxerr <= err;
+      end
     end
     if (dut.u_vdp.rnd_done && dut.u_vdp.vcnt == {1'b0, dut.u_vdp.rnd_line} &&
         dut.u_vdp.hcnt > 9'd8) begin
@@ -727,6 +747,8 @@ module tb_system;
     $display("render late_lines=%0d (completed mid-scanout)", rb_late);
     $display("render late detail: beam_visible=%0d (hcnt>=28) max_hcnt=%0d sy_changed=%0d",
              rb_late_vis, rb_late_maxh, rb_late_chg);
+    $display("fg scroll prediction: exact=%0d miss=%0d maxerr=%0dpx",
+             fg_pred_exact, fg_pred_miss, fg_pred_maxerr);
     if (late_fh != 0) $fclose(late_fh);
     $display("render load: div_cycles=%0d ovl_stall_cycles=%0d",
              dut.u_vdp.u_render.dbg_div_cyc, dut.u_vdp.u_render.dbg_ovl_stall);
