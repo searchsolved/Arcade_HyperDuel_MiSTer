@@ -177,6 +177,29 @@ likely the X-SCROLL component:
   unfixable without per-pixel register sampling (which the real
   chip does inherently via its internal pipeline).
 
+### UPDATE 2026-07-15: X-scroll prediction fix VALIDATED offline
+
+Root cause confirmed: sx0/sy1/sx1/sx2 are written once per frame DURING
+line 0 (after the lines 0/1 kicks), so the top 2 lines rendered with
+one-frame-stale X. Fix (committed): frame-global prediction pred_fg =
+cur + (cur - prev), latched at the line-0 kick, presented to the
+renderer for lines 0-1 only (i4220_vdp.sv).
+
+Evidence (tools/fgpred_replay.py on ramphunt_11 raster capture, 837
+ramp frames):
+- sx2 (visible cloud layer): stale = 529 frames with >2px strip
+  (up to 7px). Predicted = 539 exact, 296 at 1-2px, ONE frame >2px
+  (a scene-cut jump, single frame).
+- sx0: 1718/1722 exact. sy1: eliminates all 31 >2px stale frames.
+- sx1: capped 1-2px both ways (fractional speed), visually identical.
+
+Verification protocol (rotation nondeterminism proof): +FGLOG=path
+logs every line-0 fg write (frame,reg,written,pred,err);
+tools/fgpred_crosscheck.py replays the algorithm from the same run's
+raster_writes_sim.csv and diffs the RTL's pred event-by-event - works
+on ANY rotation, no ramp seed needed. tools/xpred_hunt.sh collects
+both logs per seed.
+
 ### DIP switches
 Free Play DIP does not work. Check:
 1. MRA DIP definition vs MAME hyprduel.cpp INPUT_PORTS_START section
