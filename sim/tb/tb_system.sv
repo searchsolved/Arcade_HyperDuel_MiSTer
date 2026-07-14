@@ -381,6 +381,7 @@ module tb_system;
   int         rb_cyc, rb_max, rb_over, rb_over_frame, rb_late;
   int         rb_late_vis, rb_late_maxh, rb_late_chg, late_fh;
   int         fg_pred_exact, fg_pred_miss, fg_pred_maxerr;
+  int         fg_fh;
   logic [8:0] lk_nv;
   logic [31:0] lk_snap [2];      // [0]=line0, [1]=line2 sy0/sy2 at h0
   logic       lk_changed [2];
@@ -390,6 +391,11 @@ module tb_system;
     if ($value$plusargs("LATELOG=%s", lpath)) begin
       late_fh = $fopen(lpath, "w");
       $fwrite(late_fh, "frame,line,hcnt,sy_changed\n");
+    end
+    fg_fh = 0;
+    if ($value$plusargs("FGLOG=%s", lpath)) begin
+      fg_fh = $fopen(lpath, "w");
+      $fwrite(fg_fh, "frame,reg,written,pred,err\n");
     end
   end
   int         st_flagA, st_flagB, st_busy;
@@ -487,6 +493,9 @@ module tb_system;
       err = int'(newv) - int'(dut.u_vdp.pred_fg[fgi]);
       if (err > 32768) err -= 65536;
       if (err < -32768) err += 65536;
+      if (fg_fh != 0)
+        $fwrite(fg_fh, "%0d,%0d,%0d,%0d,%0d\n", frames_seen, fgi,
+                newv, dut.u_vdp.pred_fg[fgi], err);
       if (err == 0) fg_pred_exact <= fg_pred_exact + 1;
       else begin
         fg_pred_miss <= fg_pred_miss + 1;
