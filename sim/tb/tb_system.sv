@@ -493,18 +493,19 @@ module tb_system;
       $display("DSWRD f=%0d data=%04x", frames_seen, dut.m_rdata_q);
       dswrd_n <= dswrd_n + 1;
     end
-    // registered scroll view must track r_scroll with exactly 1 clk lag
-    exp_sy0 <= dut.u_vdp.r_scroll[0];
-    exp_sx0 <= dut.u_vdp.r_scroll[1];
-    exp_sy1 <= dut.u_vdp.r_scroll[2];
-    exp_sx1 <= dut.u_vdp.r_scroll[3];
-    exp_sx2 <= dut.u_vdp.r_scroll[5];
+    // registered (scroll - window) view must track the registers with
+    // exactly 1 clk lag
+    exp_sy0 <= dut.u_vdp.r_scroll[0] - dut.u_vdp.r_window[0];
+    exp_sx0 <= dut.u_vdp.r_scroll[1] - dut.u_vdp.r_window[1];
+    exp_sy1 <= dut.u_vdp.r_scroll[2] - dut.u_vdp.r_window[2];
+    exp_sx1 <= dut.u_vdp.r_scroll[3] - dut.u_vdp.r_window[3];
+    exp_sx2 <= dut.u_vdp.r_scroll[5] - dut.u_vdp.r_window[5];
     if (frames_seen > 0 &&
-        (dut.u_vdp.rs_scroll_y[0] !== exp_sy0 ||
-         dut.u_vdp.rs_scroll_x[0] !== exp_sx0 ||
-         dut.u_vdp.rs_scroll_y[1] !== exp_sy1 ||
-         dut.u_vdp.rs_scroll_x[1] !== exp_sx1 ||
-         dut.u_vdp.rs_scroll_x[2] !== exp_sx2))
+        (dut.u_vdp.rs_sw_y[0] !== exp_sy0 ||
+         dut.u_vdp.rs_sw_x[0] !== exp_sx0 ||
+         dut.u_vdp.rs_sw_y[1] !== exp_sy1 ||
+         dut.u_vdp.rs_sw_x[1] !== exp_sx1 ||
+         dut.u_vdp.rs_sw_x[2] !== exp_sx2))
       rs_eff_mm <= rs_eff_mm + 1;
     if (dut.u_vdp.rnd_done && dut.u_vdp.vcnt == {1'b0, dut.u_vdp.rnd_line} &&
         dut.u_vdp.hcnt > 9'd8) begin

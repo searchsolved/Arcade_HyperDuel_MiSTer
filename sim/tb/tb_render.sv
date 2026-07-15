@@ -38,6 +38,8 @@ module tb_render;
   logic [15:0] scroll_y [3];
   logic [15:0] window_x [3];
   logic [15:0] window_y [3];
+  logic [15:0] sw_x [3];
+  logic [15:0] sw_y [3];
   logic [15:0] vram_addr16;
   logic [15:0] vram_q [3];
   logic [9:0]  tt_addr;
@@ -60,8 +62,8 @@ module tb_render;
     .i_layer_pri(regs[5][5:0]),
     .i_bg_color(regs[6][11:0]),
     .i_screen_ctrl(regs[9]),
-    .i_scroll_x(scroll_x), .i_scroll_y(scroll_y),
     .i_window_x(window_x), .i_window_y(window_y),
+    .i_sw_x(sw_x), .i_sw_y(sw_y),
     .i_spr_count(regs[0]), .i_spr_pri(regs[1]),
     .i_spr_xoff(regs[3]), .i_spr_yoff(regs[2]),
     .i_spr_color(regs[4]),
@@ -83,6 +85,8 @@ module tb_render;
       window_x[l] = regs[11 + l*2];
       scroll_y[l] = regs[16 + l*2];
       scroll_x[l] = regs[17 + l*2];
+      sw_y[l] = scroll_y[l] - window_y[l];
+      sw_x[l] = scroll_x[l] - window_x[l];
     end
   end
 

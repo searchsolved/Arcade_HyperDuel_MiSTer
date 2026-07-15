@@ -36,10 +36,14 @@ module i4220_render #(
     input  logic [5:0]  i_layer_pri,       // [1:0] L0, [3:2] L1, [5:4] L2
     input  logic [11:0] i_bg_color,
     input  logic [15:0] i_screen_ctrl,
-    input  logic [15:0] i_scroll_x [3],
-    input  logic [15:0] i_scroll_y [3],
     input  logic [15:0] i_window_x [3],
     input  logic [15:0] i_window_y [3],
+    // pre-registered (scroll - window) per layer: keeps the per-pixel
+    // resx/resy adders 2-term (the 3-term form with both 3:1 muxes was
+    // the worst setup path, layer -> lay_waddr, -0.5ns on 2026-07-15).
+    // Raw scroll is not needed here: every consumer folds window in.
+    input  logic [15:0] i_sw_x [3],
+    input  logic [15:0] i_sw_y [3],
     input  logic [15:0] i_spr_count,
     input  logic [15:0] i_spr_pri,
     input  logic [15:0] i_spr_xoff,
@@ -312,12 +316,12 @@ module i4220_render #(
     winh_m = big ? 32'h1FF : 32'hFF;
     big_m  = big ? 32'hFFF : 32'h7FF;
 
-    resy = 32'(i_scroll_y[layer]) + 32'(line_r) - 32'(i_window_y[layer]);
+    resy = 32'(i_sw_y[layer]) + 32'(line_r);
     scy  = resy & winh_m;
     srcl = (32'(i_window_y[layer]) + scy) & big_m;
     srcl_c = srcl;
 
-    resx = 32'(i_scroll_x[layer]) + 32'(xcur) - 32'(i_window_x[layer]);
+    resx = 32'(i_sw_x[layer]) + 32'(xcur);
     scx  = resx & winw_m;
     srcc = (32'(i_window_x[layer]) + scx) & big_m;
 
@@ -492,8 +496,7 @@ module i4220_render #(
             // (the boundary x is exactly xcur + 6 at this trigger),
             // stage 2 the window-masked column, then the shallow issue
             if (pix_x == tsz - 5'd6 && (xcur + 9'd6) < 9'(WIDTH)) begin
-              la_resx_r <= 32'(i_scroll_x[layer]) + 32'(xcur) + 32'd6
-                         - 32'(i_window_x[layer]);
+              la_resx_r <= 32'(i_sw_x[layer]) + 32'(xcur) + 32'd6;
               la_ph <= 2'd1;
             end else if (la_ph == 2'd1 && pix_x == tsz - 5'd5) begin
               la_srcc_r <= (32'(i_window_x[layer])

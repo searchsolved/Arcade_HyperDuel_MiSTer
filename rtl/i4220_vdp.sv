@@ -217,8 +217,6 @@ module i4220_vdp #(
   assign o_irq = |(r_irq_cause & ~r_irq_enable & P_IRQ_LINE_MASK);
 
   // renderer register views
-  logic [15:0] rs_scroll_x [3];
-  logic [15:0] rs_scroll_y [3];
   logic [15:0] rs_window_x [3];
   logic [15:0] rs_window_y [3];
   // The scroll view is a registered copy (one clk behind r_scroll): a
@@ -233,10 +231,15 @@ module i4220_vdp #(
   // chip's line 0 also latches before those writes land, and a linear
   // predictor tried here mispredicted during slowdown sections (boss
   // fights change the write cadence) - worse than the 1-line stale.
+  logic [15:0] rs_sw_x [3];
+  logic [15:0] rs_sw_y [3];
   always_ff @(posedge clk) begin
     for (int l = 0; l < 3; l++) begin
-      rs_scroll_y[l] <= r_scroll[l*2 + 0];
-      rs_scroll_x[l] <= r_scroll[l*2 + 1];
+      // pre-registered (scroll - window): keeps the renderer's per-pixel
+      // resx/resy adders 2-term (identical result in the low 16 bits,
+      // which is all the <=12-bit window masks ever consume)
+      rs_sw_y[l] <= r_scroll[l*2 + 0] - r_window[l*2 + 0];
+      rs_sw_x[l] <= r_scroll[l*2 + 1] - r_window[l*2 + 1];
     end
   end
   always_comb begin
@@ -381,8 +384,8 @@ module i4220_vdp #(
     .i_layer_pri(r_layer_pri),
     .i_bg_color(r_bg),
     .i_screen_ctrl(r_ctrl),
-    .i_scroll_x(rs_scroll_x), .i_scroll_y(rs_scroll_y),
     .i_window_x(rs_window_x), .i_window_y(rs_window_y),
+    .i_sw_x(rs_sw_x), .i_sw_y(rs_sw_y),
     .i_spr_count(r_spr_count), .i_spr_pri(r_spr_pri),
     .i_spr_xoff(r_spr_xoff), .i_spr_yoff(r_spr_yoff),
     .i_spr_color(r_spr_color),
