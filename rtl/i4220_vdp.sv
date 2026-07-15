@@ -221,45 +221,22 @@ module i4220_vdp #(
   logic [15:0] rs_scroll_y [3];
   logic [15:0] rs_window_x [3];
   logic [15:0] rs_window_y [3];
-  // Frame-global scroll freshness for lines 0-1 (MEASURED, seed-11
-  // raster log): the game writes sx0/sy1/sx1/sx2 once per frame during
-  // line 0 (h59-340), after lines 0 and 1 have already kicked, so those
-  // two lines render one frame stale - up to 7 px of horizontal offset
-  // on the fast layer (the "torn clouds" strip; PCB footage shows the
-  // real chip's just-in-time fetch keeps its top lines aligned). The
-  // ramp is linear, so the incoming value is known at kick time:
-  // pred = cur + (cur - prev). Latched at the line-0 kick, presented to
-  // the renderer for lines 0-1 only; a ramp start/stop mispredicts for
-  // exactly one frame on two lines, which is where the permanent error
-  // used to live. sy0/sy2 are per-line ramped and handled by the
-  // conditional late kick instead (lk_pred above).
-  logic [15:0] prev_fg [6];   // pre-write shadow of each scroll reg
-  logic [15:0] pred_fg [6];   // predicted frame-global values (idx 1,2,3,5)
-  // registered at kick accept: a live rnd_busy && (rnd_line < 2) decode
-  // put lb_bank/rnd_line into the scroll->lay_waddr timing cone (STA
-  // -0.479 on compile 2026-07-15); the select is constant for the whole
-  // line render, so latch it alongside rnd_line instead.
-  logic rnd_topline;
-  // The scroll view is a registered copy (one clk behind r_scroll):
-  // muxing pred_fg into a combinational view put the mux between the
-  // scroll registers and the renderer's resx/resy adders and broke
-  // timing on the layer->lay_waddr cone (-0.19 to -0.32 across four
-  // fitter seeds, 2026-07-15). Registering restores the pre-prediction
-  // path structure; the renderer first consumes scroll two cycles
-  // after a kick is accepted (ST_IDLE -> ST_L_PIX), and the view is
-  // correct from cycle kick+2, so nothing observes the lag. Mid-render
-  // CPU writes reach the renderer one clock later than before, well
-  // inside the 12-clk/pixel timing slop.
+  // The scroll view is a registered copy (one clk behind r_scroll): a
+  // combinational view with any added muxing sits between the scroll
+  // registers and the renderer's resx/resy adders and breaks timing on
+  // the layer->lay_waddr cone (measured -0.19 to -0.32 across four
+  // fitter seeds, 2026-07-15, with a predictor mux there). The
+  // renderer first consumes scroll two cycles after a kick is accepted
+  // (ST_IDLE -> ST_L_PIX), so nothing observes the one-clock lag.
+  // Frame-global X staleness on lines 0-1 (the game writes sx regs
+  // during line 0 h59-340, after those kicks) is left as-is: the real
+  // chip's line 0 also latches before those writes land, and a linear
+  // predictor tried here mispredicted during slowdown sections (boss
+  // fights change the write cadence) - worse than the 1-line stale.
   always_ff @(posedge clk) begin
     for (int l = 0; l < 3; l++) begin
       rs_scroll_y[l] <= r_scroll[l*2 + 0];
       rs_scroll_x[l] <= r_scroll[l*2 + 1];
-    end
-    if (rnd_topline) begin
-      rs_scroll_x[0] <= pred_fg[1];
-      rs_scroll_y[1] <= pred_fg[2];
-      rs_scroll_x[1] <= pred_fg[3];
-      rs_scroll_x[2] <= pred_fg[5];
     end
   end
   always_comb begin
@@ -313,8 +290,20 @@ module i4220_vdp #(
   // the single frame at a ramp's start or end.
   wire sy_ramp_wr = reg_w && ((i_addr & 19'h7FFFE) == 19'h78870 ||
                               (i_addr & 19'h7FFFE) == 19'h78878);
+  // Frame-wide ramp detector (v3, measured 2026-07-15): the game's
+  // raster program rewrites sy0/sy2 during EVERY line's h36-76 slot,
+  // so a kick at h0 samples one line early for ALL lines, not just
+  // 0/2. In smooth ramp sections that is a uniform 1px phase shift,
+  // but at raster SPLITS (the stage-2 boss program jumps sy2 by up to
+  // 190px between adjacent lines) the early sample paints a full line
+  // from the wrong part of the tilemap. When >= 8 in-window sy writes
+  // were seen last frame, every line kicks at h120 (after the write
+  // slot); one-frame lag at ramp start/stop only.
+  logic [7:0] lk_wrcnt;       // in-window sy writes this frame
+  logic       lk_ramp;        // >=8 last frame -> late-kick all lines
   logic [1:0] lk_pred, lk_hit;
-  wire lk_late = (next_v == 9'd0 && lk_pred[0]) ||
+  wire lk_late = lk_ramp ||
+                 (next_v == 9'd0 && lk_pred[0]) ||
                  (next_v == 9'd2 && lk_pred[1]);
 
   // ------------------------------------------------------------------
@@ -434,8 +423,8 @@ module i4220_vdp #(
       frame_par <= 1'b0;
       lk_pred <= '0;
       lk_hit  <= '0;
-      rnd_topline <= 1'b0;
-      for (int i = 0; i < 6; i++) pred_fg[i] <= '0;
+      lk_wrcnt <= '0;
+      lk_ramp  <= 1'b0;
     end else begin
       rnd_start <= 1'b0;
       if (ce_pix && hcnt == 9'd0 && vcnt == vlast - 9'd1)
@@ -444,6 +433,12 @@ module i4220_vdp #(
       if (sy_ramp_wr && hcnt < 9'd120) begin
         if (vcnt == vlast) lk_hit[0] <= 1'b1;
         if (vcnt == 9'd1)             lk_hit[1] <= 1'b1;
+        if (lk_wrcnt != 8'hFF) lk_wrcnt <= lk_wrcnt + 8'd1;
+      end
+      // frame boundary: hand the write count to the frame-wide detector
+      if (ce_pix && hcnt == 9'd0 && vcnt == vlast) begin
+        lk_ramp  <= (lk_wrcnt >= 8'd8);
+        lk_wrcnt <= '0;
       end
       if (ce_pix && hcnt == 9'd120) begin
         if (vcnt == vlast) begin
@@ -480,9 +475,6 @@ module i4220_vdp #(
           kick_fifo[kf_wr] <= {frame_par, next_v};
           kf_wr <= kf_wr + 2'd1;
           kf_push = 1'b1;
-          if (next_v == 9'd0)
-            for (int i = 0; i < 6; i++)
-              pred_fg[i] <= r_scroll[i] + (r_scroll[i] - prev_fg[i]);
         end
       end
       if (kf_cnt != 0 && !rnd_busy && !rnd_start) begin
@@ -490,7 +482,6 @@ module i4220_vdp #(
         rnd_line  <= kick_fifo[kf_rd][7:0];
         lb_bank   <= kick_fifo[kf_rd][1:0];
         cur_par   <= kick_fifo[kf_rd][9];
-        rnd_topline <= (kick_fifo[kf_rd][7:0] < 8'd2);
         kf_rd <= kf_rd + 2'd1;
         kf_pop = 1'b1;
       end
@@ -916,12 +907,9 @@ module i4220_vdp #(
             if (i_addr >= 19'h78860 && i_addr < 19'h7886C)
               r_window[3'((i_addr - 19'h78860) >> 1)]
                 <= comb16(r_window[3'((i_addr - 19'h78860) >> 1)]);
-            else if (i_addr >= 19'h78870 && i_addr < 19'h7887C) begin
+            else if (i_addr >= 19'h78870 && i_addr < 19'h7887C)
               r_scroll[3'((i_addr - 19'h78870) >> 1)]
                 <= comb16(r_scroll[3'((i_addr - 19'h78870) >> 1)]);
-              prev_fg[3'((i_addr - 19'h78870) >> 1)]
-                <= r_scroll[3'((i_addr - 19'h78870) >> 1)];
-            end
             else if (i_addr >= 19'h78840 && i_addr < 19'h7884E) begin
               blit_regs[3'((i_addr - 19'h78840) >> 1)]
                 <= comb16(blit_regs[3'((i_addr - 19'h78840) >> 1)]);

@@ -38,9 +38,13 @@ module tb_system;
   logic       dbg_subrst;
   logic signed [15:0] audio;
   logic tb_compat60;
+  logic [15:0] tb_dsw;
   initial begin
+    int dswv;
     tb_compat60 = 1'b0;                 // default = measured 261-line frame
     if ($test$plusargs("COMPAT60")) tb_compat60 = 1'b1;
+    tb_dsw = 16'hFFBF;
+    if ($value$plusargs("DSW=%h", dswv)) tb_dsw = 16'(dswv);
   end
   longint audio_activity;
   logic signed [15:0] audio_d;
@@ -120,7 +124,7 @@ module tb_system;
     .o_audio(audio),
     .i_compat60(tb_compat60),
     .i_p1p2(inp_p1p2), .i_system(inp_system),
-    .i_dsw(16'hFFBF), .i_service(16'hFFFF),  // dsw bit6=0: demo sounds ON
+    .i_dsw(tb_dsw), .i_service(16'hFFFF),    // dsw bit6=0: demo sounds ON
     .o_mrom_rd(mrom_rd), .o_mrom_addr(mrom_addr),
     .i_mrom_data(mrom_data_mx), .i_mrom_valid(mrom_valid_mx),
     .o_oki_addr(oki_addr), .i_oki_data(oki_data_mx), .i_oki_ok(oki_ok_mx),
@@ -380,9 +384,8 @@ module tb_system;
   initial oki_first = -1;
   int         rb_cyc, rb_max, rb_over, rb_over_frame, rb_late;
   int         rb_late_vis, rb_late_maxh, rb_late_chg, late_fh;
-  int         fg_pred_exact, fg_pred_miss, fg_pred_maxerr;
-  int         fg_fh;
-  int         topline_mm;   // registered topline select vs live decode
+  int         lk_ramp_frames;  // frames the frame-wide detector late-kicked
+  int         dswrd_n;      // main-CPU DSW port reads logged
   int         rs_eff_mm;    // registered scroll view vs 1-clk-delay model
   logic [15:0] exp_sy0, exp_sx0, exp_sy1, exp_sx1, exp_sx2;
   logic [8:0] lk_nv;
@@ -394,11 +397,6 @@ module tb_system;
     if ($value$plusargs("LATELOG=%s", lpath)) begin
       late_fh = $fopen(lpath, "w");
       $fwrite(late_fh, "frame,line,hcnt,sy_changed\n");
-    end
-    fg_fh = 0;
-    if ($value$plusargs("FGLOG=%s", lpath)) begin
-      fg_fh = $fopen(lpath, "w");
-      $fwrite(fg_fh, "frame,reg,written,pred,err\n");
     end
   end
   int         st_flagA, st_flagB, st_busy;
@@ -484,39 +482,23 @@ module tb_system;
         lk_changed[lk_nv[1]] <=
           lk_snap[lk_nv[1]] != {dut.u_vdp.r_scroll[0], dut.u_vdp.r_scroll[4]};
     end
-    // frame-global scroll prediction accuracy: at each fg write during
-    // line 0, the value should equal what pred_fg gave lines 0/1.
-    if (dut.u_vdp.reg_w && dut.u_vdp.vcnt == 9'd0 &&
-        (dut.u_vdp.i_addr & 19'h7FFFE) inside {19'h78872, 19'h78874, 19'h78876, 19'h7887A}) begin
-      automatic logic [2:0] fgi = 3'((dut.u_vdp.i_addr - 19'h78870) >> 1);
-      automatic logic [15:0] newv =
-        {dut.u_vdp.i_be[1] ? dut.u_vdp.i_wdata[15:8] : dut.u_vdp.r_scroll[fgi][15:8],
-         dut.u_vdp.i_be[0] ? dut.u_vdp.i_wdata[7:0]  : dut.u_vdp.r_scroll[fgi][7:0]};
-      automatic int err;
-      err = int'(newv) - int'(dut.u_vdp.pred_fg[fgi]);
-      if (err > 32768) err -= 65536;
-      if (err < -32768) err += 65536;
-      if (fg_fh != 0)
-        $fwrite(fg_fh, "%0d,%0d,%0d,%0d,%0d\n", frames_seen, fgi,
-                newv, dut.u_vdp.pred_fg[fgi], err);
-      if (err == 0) fg_pred_exact <= fg_pred_exact + 1;
-      else begin
-        fg_pred_miss <= fg_pred_miss + 1;
-        if (err < 0) err = -err;
-        if (err > fg_pred_maxerr) fg_pred_maxerr <= err;
-      end
+    // frame-wide ramp detector activity: count frames that late-kick all
+    if (dut.u_vdp.ce_pix && dut.u_vdp.hcnt == 9'd1 && dut.u_vdp.vcnt == 9'd0
+        && dut.u_vdp.lk_ramp)
+      lk_ramp_frames <= lk_ramp_frames + 1;
+    // DSW port read log: main CPU reads of 0xE00002 and the data returned
+    // (m_asn_d maintained by the bus-trace block above)
+    if (dut.m_asn && !m_asn_d && dut.m_sel_io && dut.m_rw &&
+        dut.m_ba[2:1] == 2'd1 && dswrd_n < 40) begin
+      $display("DSWRD f=%0d data=%04x", frames_seen, dut.m_rdata_q);
+      dswrd_n <= dswrd_n + 1;
     end
-    // registered topline select must equal the live decode whenever the
-    // renderer is busy (the only time rs_scroll views are consumed)
-    if (dut.u_vdp.rnd_busy &&
-        (dut.u_vdp.rnd_topline !== (dut.u_vdp.rnd_line < 8'd2)))
-      topline_mm <= topline_mm + 1;
-    // registered scroll view must track the 1-clk-delayed mux exactly
+    // registered scroll view must track r_scroll with exactly 1 clk lag
     exp_sy0 <= dut.u_vdp.r_scroll[0];
-    exp_sx0 <= dut.u_vdp.rnd_topline ? dut.u_vdp.pred_fg[1] : dut.u_vdp.r_scroll[1];
-    exp_sy1 <= dut.u_vdp.rnd_topline ? dut.u_vdp.pred_fg[2] : dut.u_vdp.r_scroll[2];
-    exp_sx1 <= dut.u_vdp.rnd_topline ? dut.u_vdp.pred_fg[3] : dut.u_vdp.r_scroll[3];
-    exp_sx2 <= dut.u_vdp.rnd_topline ? dut.u_vdp.pred_fg[5] : dut.u_vdp.r_scroll[5];
+    exp_sx0 <= dut.u_vdp.r_scroll[1];
+    exp_sy1 <= dut.u_vdp.r_scroll[2];
+    exp_sx1 <= dut.u_vdp.r_scroll[3];
+    exp_sx2 <= dut.u_vdp.r_scroll[5];
     if (frames_seen > 0 &&
         (dut.u_vdp.rs_scroll_y[0] !== exp_sy0 ||
          dut.u_vdp.rs_scroll_x[0] !== exp_sx0 ||
@@ -777,10 +759,8 @@ module tb_system;
     $display("render late_lines=%0d (completed mid-scanout)", rb_late);
     $display("render late detail: beam_visible=%0d (hcnt>=28) max_hcnt=%0d sy_changed=%0d",
              rb_late_vis, rb_late_maxh, rb_late_chg);
-    $display("fg scroll prediction: exact=%0d miss=%0d maxerr=%0dpx",
-             fg_pred_exact, fg_pred_miss, fg_pred_maxerr);
-    $display("topline select mismatches=%0d rs view mismatches=%0d",
-             topline_mm, rs_eff_mm);
+    $display("lk ramp frames=%0d rs view mismatches=%0d",
+             lk_ramp_frames, rs_eff_mm);
     if (late_fh != 0) $fclose(late_fh);
     $display("render load: div_cycles=%0d ovl_stall_cycles=%0d",
              dut.u_vdp.u_render.dbg_div_cyc, dut.u_vdp.u_render.dbg_ovl_stall);

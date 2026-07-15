@@ -55,6 +55,7 @@ assign BUTTONS = 0;
     "O[5:3],Scandoubler Fx,None,HQ2x,CRT 25%,CRT 50%,CRT 75%;",
     "O[6],Test Pattern,Off,On;",
     "O[7],Video Timing,Native 60.24Hz,60Hz Compat;",
+    "O[8],Boot Warning,Show,Skip;",
     "-;",
     "DIP;",
     "-;",
@@ -195,7 +196,10 @@ assign BUTTONS = 0;
       joystick_1[8], joystick_0[8]};          // coin2, coin1
 
   // SERVICE port: bit15 service mode (low = on), bit14 Show Warning off
-  wire [15:0] service_in = 16'hFFFF;
+  // SERVICE port: bit15 = Service Mode (1 = off), bit14 = Show Warning
+  // (0 = show, matching MAME's default and the unmodified PCB line; our
+  // old constant FFFF silently skipped the boot legal screen).
+  wire [15:0] service_in = {1'b1, status[8], 14'h3FFF};
 
   // ------------------------------------------------------------------
   // core

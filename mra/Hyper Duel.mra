@@ -30,12 +30,14 @@
          (bit6 low = Demo Sounds ON); bytes are the raw DSW readback -->
     <switches default="bf,ff">
         <!-- DSW port, spec: docs/hyprduel_system_spec.md sec 6 -->
-        <dip name="Coin A" bits="0,2"
+        <!-- Coin A and Coin B set together: the game only honours Free
+             Play when BOTH slots are set to it (verified against MAME
+             0.288: DSW ff80 starts on 1P Start with 0 credits, ffb8
+             does not). A combined switch keeps Free Play one selection.
+             Values = CoinA | CoinB<<3 with both slots equal. -->
+        <dip name="Coinage" bits="0,5"
              ids="4C/1C,3C/1C,2C/1C,1C/1C,1C/2C,1C/3C,1C/4C,Free Play"
-             values="1,2,3,7,6,5,4,0"/>
-        <dip name="Coin B" bits="3,5"
-             ids="4C/1C,3C/1C,2C/1C,1C/1C,1C/2C,1C/3C,1C/4C,Free Play"
-             values="1,2,3,7,6,5,4,0"/>
+             values="9,18,27,63,54,45,36,0"/>
         <dip name="Demo Sounds" bits="6" ids="On,Off"/>
         <dip name="Start Up Mode" bits="7" ids="On,Off"/>
         <dip name="Flip Screen" bits="8" ids="On,Off"/>
