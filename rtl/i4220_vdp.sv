@@ -241,22 +241,10 @@ module i4220_vdp #(
   // with a registered select (the +0.151 closure structure).
   logic [15:0] rs_sw_x [3];
   logic [15:0] rs_sw_y [3];
-  logic [15:0] prev_fg [6];    // pre-write shadow of each scroll reg
-  logic [15:0] pred_sw [6];    // predicted (scroll - window), idx 1,2,3,5
-  logic        rnd_line1;      // renderer is on display line 1
   always_ff @(posedge clk) begin
     for (int l = 0; l < 3; l++) begin
-      // pre-registered (scroll - window): keeps the renderer's per-pixel
-      // resx/resy adders 2-term (identical result in the low 16 bits,
-      // which is all the <=12-bit window masks ever consume)
       rs_sw_y[l] <= r_scroll[l*2 + 0] - r_window[l*2 + 0];
       rs_sw_x[l] <= r_scroll[l*2 + 1] - r_window[l*2 + 1];
-    end
-    if (rnd_line1) begin
-      rs_sw_x[0] <= pred_sw[1];
-      rs_sw_y[1] <= pred_sw[2];
-      rs_sw_x[1] <= pred_sw[3];
-      rs_sw_x[2] <= pred_sw[5];
     end
   end
   always_comb begin
@@ -455,8 +443,6 @@ module i4220_vdp #(
       lk_wrcnt <= '0;
       lk_ramp  <= 1'b0;
       lk_cool  <= '0;
-      rnd_line1 <= 1'b0;
-      for (int i = 0; i < 6; i++) pred_sw[i] <= '0;
     end else begin
       rnd_start <= 1'b0;
       if (ce_pix && hcnt == 9'd0 && vcnt == vlast - 9'd1)
@@ -477,7 +463,10 @@ module i4220_vdp #(
       // tearing precursor: the renderer finished a line while the beam
       // was already inside that line's display row - late kicks are too
       // expensive for the current scene load, revert to h0 for ~4 s
-      if (rnd_done && vcnt == {1'b0, rnd_line} && hcnt > 9'd8)
+      // exempt real-time lines 0/1 from the tearing backoff: they
+      // complete during their own scanout by design
+      if (rnd_done && vcnt == {1'b0, rnd_line} && hcnt > 9'd8 &&
+          rnd_line >= 8'd2)
         lk_cool <= 8'd255;
       if (ce_pix && hcnt == 9'd88) begin
         if (vcnt == vlast) begin
@@ -504,20 +493,36 @@ module i4220_vdp #(
       // measured completing mid-scanout 1,357 times over a 5,200-frame
       // soak in heavy stage-2 attract frames, putting stale left-edge
       // pixels on screen (the tb late-line counters watch this).
+      // REAL-TIME KICK for lines 0 and 1 (at h0 of their own display
+      // line, not render-ahead): the game's per-line raster writes for
+      // line N arrive at vcnt=N h44-56 - during line N's OWN scanout.
+      // The real chip picks these up mid-line; our render-ahead kicks
+      // at vcnt=N-1 would miss them entirely, producing a 50+ pixel
+      // displacement on lines 0-1 (the vblank-to-ramp jump). Kicking
+      // at vcnt=N h0 (using vcnt directly, not next_v) lets the live
+      // rs_sw view carry the mid-render write to the renderer at
+      // ~h56, exactly matching the PCB. The renderer is faster than
+      // the beam (8 vs 12 clks/pixel), so it stays ahead after the
+      // ~100-clock startup.
+      if (ce_pix && hcnt == 9'd0 && vcnt < 9'd2) begin
+        if (kf_cnt < 3'd4) begin
+          kick_fifo[kf_wr] <= {frame_par, vcnt};
+          kf_wr <= kf_wr + 2'd1;
+          kf_push = 1'b1;
+        end
+      end
+      // render-ahead kicks for lines 2+ (h88 when ramp active, h0 otherwise;
+      // h1 at vcnt=1 to avoid colliding with line 1's real-time kick at h0)
       if (ce_pix &&
-          hcnt == (lk_late ? 9'd88 : 9'd0) &&
-          32'(next_v) < V_VIS) begin
+          hcnt == (lk_late ? 9'd88 : (vcnt == 9'd1) ? 9'd1 : 9'd0) &&
+          next_v >= 9'd2 && 32'(next_v) < V_VIS) begin
         if (kf_cnt == 3'd4) begin
-          rnd_overrun <= 1'b1;                     // hopelessly behind
+          rnd_overrun <= 1'b1;
           o_dbg_ovr <= o_dbg_ovr + 16'd1;
         end else begin
           kick_fifo[kf_wr] <= {frame_par, next_v};
           kf_wr <= kf_wr + 2'd1;
           kf_push = 1'b1;
-          if (next_v == 9'd0)
-            for (int i = 0; i < 6; i++)
-              pred_sw[i] <= (r_scroll[i] - prev_fg[i]) + r_scroll[i]
-                            - r_window[i];
         end
       end
       if (kf_cnt != 0 && !rnd_busy && !rnd_start) begin
@@ -525,7 +530,6 @@ module i4220_vdp #(
         rnd_line  <= kick_fifo[kf_rd][7:0];
         lb_bank   <= kick_fifo[kf_rd][1:0];
         cur_par   <= kick_fifo[kf_rd][9];
-        rnd_line1 <= (kick_fifo[kf_rd][7:0] == 8'd1);
         kf_rd <= kf_rd + 2'd1;
         kf_pop = 1'b1;
       end
@@ -954,8 +958,6 @@ module i4220_vdp #(
             else if (i_addr >= 19'h78870 && i_addr < 19'h7887C) begin
               r_scroll[3'((i_addr - 19'h78870) >> 1)]
                 <= comb16(r_scroll[3'((i_addr - 19'h78870) >> 1)]);
-              prev_fg[3'((i_addr - 19'h78870) >> 1)]
-                <= r_scroll[3'((i_addr - 19'h78870) >> 1)];
             end
             else if (i_addr >= 19'h78840 && i_addr < 19'h7884E) begin
               blit_regs[3'((i_addr - 19'h78840) >> 1)]
@@ -1080,6 +1082,12 @@ module i4220_vdp #(
       so_stale <= 1'b1;
     end else begin
       if (rnd_done)
+        bank_tag[rnd_line[1:0]] <= {cur_par, rnd_line};
+      // real-time lines 0/1: mark bank as fresh at kick accept so scanout
+      // reads the linebuffer (being filled by the renderer ahead of the
+      // beam) instead of substituting r_bg. rnd_start fires on the kick-
+      // accept clock; rnd_line / cur_par are set on the same edge.
+      if (rnd_start && rnd_line < 8'd2)
         bank_tag[rnd_line[1:0]] <= {cur_par, rnd_line};
       so_stale <= (bank_tag[vcnt[1:0]] != {frame_par, vcnt[7:0]});
     end

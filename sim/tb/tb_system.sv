@@ -391,6 +391,9 @@ module tb_system;
   int         dswrd_n;      // main-CPU DSW port reads logged
   int         rs_eff_mm;    // registered scroll view vs 1-clk-delay model
   logic [15:0] exp_sy0, exp_sx0, exp_sy1, exp_sx1, exp_sx2;
+  // STEP 2: bank-tag / parity audit
+  int         bt_stale_n;   // total stale-bank scanout pixels
+  int         bt_stale_l [4]; // stale pixels per line (0-3 only)
   logic [8:0] lk_nv;
   logic [31:0] lk_snap [2];      // [0]=line0, [1]=line2 sy0/sy2 at h0
   logic       lk_changed [2];
@@ -494,6 +497,13 @@ module tb_system;
     if (dut.u_vdp.ce_pix && dut.u_vdp.hcnt == 9'd1 && dut.u_vdp.vcnt == 9'd0
         && dut.u_vdp.lk_ramp)
       lk_ramp_frames <= lk_ramp_frames + 1;
+    // bank-tag / parity audit: count pixels where scanout reads a stale bank
+    if (dut.u_vdp.ce_pix && dut.u_vdp.so_stale &&
+        32'(dut.u_vdp.hcnt) < 320 && 32'(dut.u_vdp.vcnt) < 224) begin
+      bt_stale_n <= bt_stale_n + 1;
+      if (dut.u_vdp.vcnt < 9'd4)
+        bt_stale_l[dut.u_vdp.vcnt[1:0]] <= bt_stale_l[dut.u_vdp.vcnt[1:0]] + 1;
+    end
     // DSW port read log: main CPU reads of 0xE00002 and the data returned
     // (m_asn_d maintained by the bus-trace block above)
     if (dut.m_asn && !m_asn_d && dut.m_sel_io && dut.m_rw &&
@@ -502,16 +512,12 @@ module tb_system;
       dswrd_n <= dswrd_n + 1;
     end
     // registered (scroll - window) view must track the registers with
-    // exactly 1 clk lag; line-1 renders see the predicted fg values
+    // exactly 1 clk lag (no prediction mux with real-time lines 0/1)
     exp_sy0 <= dut.u_vdp.r_scroll[0] - dut.u_vdp.r_window[0];
-    exp_sx0 <= dut.u_vdp.rnd_line1 ? dut.u_vdp.pred_sw[1]
-             : dut.u_vdp.r_scroll[1] - dut.u_vdp.r_window[1];
-    exp_sy1 <= dut.u_vdp.rnd_line1 ? dut.u_vdp.pred_sw[2]
-             : dut.u_vdp.r_scroll[2] - dut.u_vdp.r_window[2];
-    exp_sx1 <= dut.u_vdp.rnd_line1 ? dut.u_vdp.pred_sw[3]
-             : dut.u_vdp.r_scroll[3] - dut.u_vdp.r_window[3];
-    exp_sx2 <= dut.u_vdp.rnd_line1 ? dut.u_vdp.pred_sw[5]
-             : dut.u_vdp.r_scroll[5] - dut.u_vdp.r_window[5];
+    exp_sx0 <= dut.u_vdp.r_scroll[1] - dut.u_vdp.r_window[1];
+    exp_sy1 <= dut.u_vdp.r_scroll[2] - dut.u_vdp.r_window[2];
+    exp_sx1 <= dut.u_vdp.r_scroll[3] - dut.u_vdp.r_window[3];
+    exp_sx2 <= dut.u_vdp.r_scroll[5] - dut.u_vdp.r_window[5];
     if (frames_seen > 0 &&
         (dut.u_vdp.rs_sw_y[0] !== exp_sy0 ||
          dut.u_vdp.rs_sw_x[0] !== exp_sx0 ||
@@ -781,6 +787,8 @@ module tb_system;
              rb_late_vis, rb_late_maxh, rb_late_chg);
     $display("lk ramp frames=%0d rs view mismatches=%0d cool activations=%0d",
              lk_ramp_frames, rs_eff_mm, lk_cool_n);
+    $display("bank stale scanout: total=%0d line0=%0d line1=%0d line2=%0d line3=%0d",
+             bt_stale_n, bt_stale_l[0], bt_stale_l[1], bt_stale_l[2], bt_stale_l[3]);
     if (late_fh != 0) $fclose(late_fh);
     $display("render load: div_cycles=%0d ovl_stall_cycles=%0d",
              dut.u_vdp.u_render.dbg_div_cyc, dut.u_vdp.u_render.dbg_ovl_stall);
