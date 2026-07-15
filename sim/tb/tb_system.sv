@@ -385,6 +385,9 @@ module tb_system;
   int         rb_cyc, rb_max, rb_over, rb_over_frame, rb_late;
   int         rb_late_vis, rb_late_maxh, rb_late_chg, late_fh;
   int         lk_ramp_frames;  // frames the frame-wide detector late-kicked
+  int         lk_cool_n;       // tearing-backoff activations
+  logic [7:0] lk_cool_d;
+  int         cost_fh;         // +LINECOST=<path> per-line render cycles
   int         dswrd_n;      // main-CPU DSW port reads logged
   int         rs_eff_mm;    // registered scroll view vs 1-clk-delay model
   logic [15:0] exp_sy0, exp_sx0, exp_sy1, exp_sx1, exp_sx2;
@@ -397,6 +400,11 @@ module tb_system;
     if ($value$plusargs("LATELOG=%s", lpath)) begin
       late_fh = $fopen(lpath, "w");
       $fwrite(late_fh, "frame,line,hcnt,sy_changed\n");
+    end
+    cost_fh = 0;
+    if ($value$plusargs("LINECOST=%s", lpath)) begin
+      cost_fh = $fopen(lpath, "w");
+      $fwrite(cost_fh, "frame,line,cycles\n");
     end
   end
   int         st_flagA, st_flagB, st_busy;
@@ -494,12 +502,16 @@ module tb_system;
       dswrd_n <= dswrd_n + 1;
     end
     // registered (scroll - window) view must track the registers with
-    // exactly 1 clk lag
+    // exactly 1 clk lag; line-1 renders see the predicted fg values
     exp_sy0 <= dut.u_vdp.r_scroll[0] - dut.u_vdp.r_window[0];
-    exp_sx0 <= dut.u_vdp.r_scroll[1] - dut.u_vdp.r_window[1];
-    exp_sy1 <= dut.u_vdp.r_scroll[2] - dut.u_vdp.r_window[2];
-    exp_sx1 <= dut.u_vdp.r_scroll[3] - dut.u_vdp.r_window[3];
-    exp_sx2 <= dut.u_vdp.r_scroll[5] - dut.u_vdp.r_window[5];
+    exp_sx0 <= dut.u_vdp.rnd_line1 ? dut.u_vdp.pred_sw[1]
+             : dut.u_vdp.r_scroll[1] - dut.u_vdp.r_window[1];
+    exp_sy1 <= dut.u_vdp.rnd_line1 ? dut.u_vdp.pred_sw[2]
+             : dut.u_vdp.r_scroll[2] - dut.u_vdp.r_window[2];
+    exp_sx1 <= dut.u_vdp.rnd_line1 ? dut.u_vdp.pred_sw[3]
+             : dut.u_vdp.r_scroll[3] - dut.u_vdp.r_window[3];
+    exp_sx2 <= dut.u_vdp.rnd_line1 ? dut.u_vdp.pred_sw[5]
+             : dut.u_vdp.r_scroll[5] - dut.u_vdp.r_window[5];
     if (frames_seen > 0 &&
         (dut.u_vdp.rs_sw_y[0] !== exp_sy0 ||
          dut.u_vdp.rs_sw_x[0] !== exp_sx0 ||
@@ -524,8 +536,15 @@ module tb_system;
         rb_over <= rb_over + 1;
         rb_over_frame <= frames_seen;
       end
+      if (rb_cyc != 0 && cost_fh != 0)
+        $fwrite(cost_fh, "%0d,%0d,%0d\n", frames_seen,
+                dut.u_vdp.rnd_line, rb_cyc);
       rb_cyc <= 0;
     end
+    // tearing-backoff activations (lk_cool armed by the VDP)
+    lk_cool_d <= dut.u_vdp.lk_cool;
+    if (dut.u_vdp.lk_cool == 8'd255 && lk_cool_d != 8'd255)
+      lk_cool_n <= lk_cool_n + 1;
   end
 
   // audio capture: +AUDIODUMP=<path> writes raw s16le mono at sys/2048
@@ -760,8 +779,8 @@ module tb_system;
     $display("render late_lines=%0d (completed mid-scanout)", rb_late);
     $display("render late detail: beam_visible=%0d (hcnt>=28) max_hcnt=%0d sy_changed=%0d",
              rb_late_vis, rb_late_maxh, rb_late_chg);
-    $display("lk ramp frames=%0d rs view mismatches=%0d",
-             lk_ramp_frames, rs_eff_mm);
+    $display("lk ramp frames=%0d rs view mismatches=%0d cool activations=%0d",
+             lk_ramp_frames, rs_eff_mm, lk_cool_n);
     if (late_fh != 0) $fclose(late_fh);
     $display("render load: div_cycles=%0d ovl_stall_cycles=%0d",
              dut.u_vdp.u_render.dbg_div_cyc, dut.u_vdp.u_render.dbg_ovl_stall);

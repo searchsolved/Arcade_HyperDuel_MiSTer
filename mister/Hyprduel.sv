@@ -57,6 +57,7 @@ assign BUTTONS = 0;
     "O[7],Video Timing,Native 60.24Hz,60Hz Compat;",
     "O[8],Boot Warning,Show,Skip;",
     "O[9],Autosave Hiscores,On,Off;",
+    "O[10],Line Ruler (debug),Off,On;",
     "-;",
     "DIP;",
     "-;",
@@ -664,7 +665,14 @@ assign BUTTONS = 0;
   end
 
   wire [23:0] core_rgb = {r5, r5[4:2], g5, g5[4:2], b5, b5[4:2]};
-  wire [23:0] vid_rgb = status[6] ? p3_overlay_rgb : core_rgb;
+  // Scanline ruler (debug, O[10]): tabs on the left edge of the top
+  // three lines so artifact reports map to exact line indices on a
+  // line-sharp display. line 0 = red, line 1 = cyan, line 2 = yellow.
+  wire        ruler_on = status[10] && dbg_vcnt < 9'd3 && dbg_hcnt < 9'd8;
+  wire [23:0] ruler_rgb = (dbg_vcnt == 9'd0) ? 24'hFF0000 :
+                          (dbg_vcnt == 9'd1) ? 24'h00FFFF : 24'hFFFF00;
+  wire [23:0] vid_rgb = status[6] ? p3_overlay_rgb :
+                        ruler_on  ? ruler_rgb : core_rgb;
 
   arcade_video #(.WIDTH(320), .DW(24)) arcade_video (
     .*,
