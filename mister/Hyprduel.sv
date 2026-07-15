@@ -56,7 +56,7 @@ assign BUTTONS = 0;
     "O[6],Test Pattern,Off,On;",
     "O[7],Video Timing,Native 60.24Hz,60Hz Compat;",
     "O[8],Boot Warning,Show,Skip;",
-    "O[9],Autosave Hiscores,Off,On;",
+    "O[9],Autosave Hiscores,On,Off;",
     "-;",
     "DIP;",
     "-;",
@@ -275,7 +275,7 @@ assign BUTTONS = 0;
     .HS_ADDRESSWIDTH(24), .HS_SCOREWIDTH(7),
     .CFG_ADDRESSWIDTH(2), .CFG_LENGTHWIDTH(1)
   ) u_hiscore (
-    .clk(clk_sys), .paused(1'b0), .reset(reset), .autosave(status[9]),
+    .clk(clk_sys), .paused(1'b0), .reset(reset), .autosave(~status[9]),
     .ioctl_upload(ioctl_upload), .ioctl_upload_req(ioctl_upload_req),
     .ioctl_download(ioctl_download), .ioctl_wr(ioctl_wr),
     .ioctl_addr(ioctl_addr[24:0]), .ioctl_index(ioctl_index[7:0]),
