@@ -383,6 +383,8 @@ module tb_system;
   int         fg_pred_exact, fg_pred_miss, fg_pred_maxerr;
   int         fg_fh;
   int         topline_mm;   // registered topline select vs live decode
+  int         rs_eff_mm;    // registered scroll view vs 1-clk-delay model
+  logic [15:0] exp_sy0, exp_sx0, exp_sy1, exp_sx1, exp_sx2;
   logic [8:0] lk_nv;
   logic [31:0] lk_snap [2];      // [0]=line0, [1]=line2 sy0/sy2 at h0
   logic       lk_changed [2];
@@ -509,6 +511,19 @@ module tb_system;
     if (dut.u_vdp.rnd_busy &&
         (dut.u_vdp.rnd_topline !== (dut.u_vdp.rnd_line < 8'd2)))
       topline_mm <= topline_mm + 1;
+    // registered scroll view must track the 1-clk-delayed mux exactly
+    exp_sy0 <= dut.u_vdp.r_scroll[0];
+    exp_sx0 <= dut.u_vdp.rnd_topline ? dut.u_vdp.pred_fg[1] : dut.u_vdp.r_scroll[1];
+    exp_sy1 <= dut.u_vdp.rnd_topline ? dut.u_vdp.pred_fg[2] : dut.u_vdp.r_scroll[2];
+    exp_sx1 <= dut.u_vdp.rnd_topline ? dut.u_vdp.pred_fg[3] : dut.u_vdp.r_scroll[3];
+    exp_sx2 <= dut.u_vdp.rnd_topline ? dut.u_vdp.pred_fg[5] : dut.u_vdp.r_scroll[5];
+    if (frames_seen > 0 &&
+        (dut.u_vdp.rs_scroll_y[0] !== exp_sy0 ||
+         dut.u_vdp.rs_scroll_x[0] !== exp_sx0 ||
+         dut.u_vdp.rs_scroll_y[1] !== exp_sy1 ||
+         dut.u_vdp.rs_scroll_x[1] !== exp_sx1 ||
+         dut.u_vdp.rs_scroll_x[2] !== exp_sx2))
+      rs_eff_mm <= rs_eff_mm + 1;
     if (dut.u_vdp.rnd_done && dut.u_vdp.vcnt == {1'b0, dut.u_vdp.rnd_line} &&
         dut.u_vdp.hcnt > 9'd8) begin
       if (dut.u_vdp.hcnt >= 9'd28) rb_late_vis <= rb_late_vis + 1;
@@ -764,7 +779,8 @@ module tb_system;
              rb_late_vis, rb_late_maxh, rb_late_chg);
     $display("fg scroll prediction: exact=%0d miss=%0d maxerr=%0dpx",
              fg_pred_exact, fg_pred_miss, fg_pred_maxerr);
-    $display("topline select mismatches=%0d", topline_mm);
+    $display("topline select mismatches=%0d rs view mismatches=%0d",
+             topline_mm, rs_eff_mm);
     if (late_fh != 0) $fclose(late_fh);
     $display("render load: div_cycles=%0d ovl_stall_cycles=%0d",
              dut.u_vdp.u_render.dbg_div_cyc, dut.u_vdp.u_render.dbg_ovl_stall);

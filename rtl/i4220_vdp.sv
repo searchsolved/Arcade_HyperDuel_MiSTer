@@ -240,18 +240,32 @@ module i4220_vdp #(
   // -0.479 on compile 2026-07-15); the select is constant for the whole
   // line render, so latch it alongside rnd_line instead.
   logic rnd_topline;
+  // The scroll view is a registered copy (one clk behind r_scroll):
+  // muxing pred_fg into a combinational view put the mux between the
+  // scroll registers and the renderer's resx/resy adders and broke
+  // timing on the layer->lay_waddr cone (-0.19 to -0.32 across four
+  // fitter seeds, 2026-07-15). Registering restores the pre-prediction
+  // path structure; the renderer first consumes scroll two cycles
+  // after a kick is accepted (ST_IDLE -> ST_L_PIX), and the view is
+  // correct from cycle kick+2, so nothing observes the lag. Mid-render
+  // CPU writes reach the renderer one clock later than before, well
+  // inside the 12-clk/pixel timing slop.
+  always_ff @(posedge clk) begin
+    for (int l = 0; l < 3; l++) begin
+      rs_scroll_y[l] <= r_scroll[l*2 + 0];
+      rs_scroll_x[l] <= r_scroll[l*2 + 1];
+    end
+    if (rnd_topline) begin
+      rs_scroll_x[0] <= pred_fg[1];
+      rs_scroll_y[1] <= pred_fg[2];
+      rs_scroll_x[1] <= pred_fg[3];
+      rs_scroll_x[2] <= pred_fg[5];
+    end
+  end
   always_comb begin
     for (int l = 0; l < 3; l++) begin
       rs_window_y[l] = r_window[l*2 + 0];
       rs_window_x[l] = r_window[l*2 + 1];
-      rs_scroll_y[l] = r_scroll[l*2 + 0];
-      rs_scroll_x[l] = r_scroll[l*2 + 1];
-    end
-    if (rnd_topline) begin
-      rs_scroll_x[0] = pred_fg[1];
-      rs_scroll_y[1] = pred_fg[2];
-      rs_scroll_x[1] = pred_fg[3];
-      rs_scroll_x[2] = pred_fg[5];
     end
   end
 
