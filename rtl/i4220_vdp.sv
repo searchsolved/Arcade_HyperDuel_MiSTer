@@ -235,7 +235,11 @@ module i4220_vdp #(
   // conditional late kick instead (lk_pred above).
   logic [15:0] prev_fg [6];   // pre-write shadow of each scroll reg
   logic [15:0] pred_fg [6];   // predicted frame-global values (idx 1,2,3,5)
-  wire rnd_topline = rnd_busy && (rnd_line < 8'd2);
+  // registered at kick accept: a live rnd_busy && (rnd_line < 2) decode
+  // put lb_bank/rnd_line into the scroll->lay_waddr timing cone (STA
+  // -0.479 on compile 2026-07-15); the select is constant for the whole
+  // line render, so latch it alongside rnd_line instead.
+  logic rnd_topline;
   always_comb begin
     for (int l = 0; l < 3; l++) begin
       rs_window_y[l] = r_window[l*2 + 0];
@@ -416,6 +420,7 @@ module i4220_vdp #(
       frame_par <= 1'b0;
       lk_pred <= '0;
       lk_hit  <= '0;
+      rnd_topline <= 1'b0;
       for (int i = 0; i < 6; i++) pred_fg[i] <= '0;
     end else begin
       rnd_start <= 1'b0;
@@ -471,6 +476,7 @@ module i4220_vdp #(
         rnd_line  <= kick_fifo[kf_rd][7:0];
         lb_bank   <= kick_fifo[kf_rd][1:0];
         cur_par   <= kick_fifo[kf_rd][9];
+        rnd_topline <= (kick_fifo[kf_rd][7:0] < 8'd2);
         kf_rd <= kf_rd + 2'd1;
         kf_pop = 1'b1;
       end

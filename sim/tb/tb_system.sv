@@ -382,6 +382,7 @@ module tb_system;
   int         rb_late_vis, rb_late_maxh, rb_late_chg, late_fh;
   int         fg_pred_exact, fg_pred_miss, fg_pred_maxerr;
   int         fg_fh;
+  int         topline_mm;   // registered topline select vs live decode
   logic [8:0] lk_nv;
   logic [31:0] lk_snap [2];      // [0]=line0, [1]=line2 sy0/sy2 at h0
   logic       lk_changed [2];
@@ -503,6 +504,11 @@ module tb_system;
         if (err > fg_pred_maxerr) fg_pred_maxerr <= err;
       end
     end
+    // registered topline select must equal the live decode whenever the
+    // renderer is busy (the only time rs_scroll views are consumed)
+    if (dut.u_vdp.rnd_busy &&
+        (dut.u_vdp.rnd_topline !== (dut.u_vdp.rnd_line < 8'd2)))
+      topline_mm <= topline_mm + 1;
     if (dut.u_vdp.rnd_done && dut.u_vdp.vcnt == {1'b0, dut.u_vdp.rnd_line} &&
         dut.u_vdp.hcnt > 9'd8) begin
       if (dut.u_vdp.hcnt >= 9'd28) rb_late_vis <= rb_late_vis + 1;
@@ -758,6 +764,7 @@ module tb_system;
              rb_late_vis, rb_late_maxh, rb_late_chg);
     $display("fg scroll prediction: exact=%0d miss=%0d maxerr=%0dpx",
              fg_pred_exact, fg_pred_miss, fg_pred_maxerr);
+    $display("topline select mismatches=%0d", topline_mm);
     if (late_fh != 0) $fclose(late_fh);
     $display("render load: div_cycles=%0d ovl_stall_cycles=%0d",
              dut.u_vdp.u_render.dbg_div_cyc, dut.u_vdp.u_render.dbg_ovl_stall);
