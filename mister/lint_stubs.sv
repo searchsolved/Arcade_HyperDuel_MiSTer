@@ -33,6 +33,11 @@ module hps_io #(parameter CONF_STR = "", CONF_STR_BRAM = 0, PS2DIV = 0,
     output [26:0] ioctl_addr,
     output [7:0]  ioctl_dout,
     output [15:0] ioctl_index,
+    input         ioctl_wait,
+    output        ioctl_upload,
+    input         ioctl_upload_req,
+    input  [7:0]  ioctl_upload_index,
+    input  [7:0]  ioctl_din,
     output [31:0] joystick_0,
     output [31:0] joystick_1
 );

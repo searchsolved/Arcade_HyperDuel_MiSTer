@@ -38,4 +38,5 @@ set_global_assignment -name VERILOG_FILE pll/pll_0002.v
 
 # shell
 set_global_assignment -name SDC_FILE Hyprduel.sdc
+set_global_assignment -name VERILOG_FILE hiscore.v
 set_global_assignment -name SYSTEMVERILOG_FILE Hyprduel.sv

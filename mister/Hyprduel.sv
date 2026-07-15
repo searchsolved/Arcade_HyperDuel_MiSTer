@@ -56,6 +56,7 @@ assign BUTTONS = 0;
     "O[6],Test Pattern,Off,On;",
     "O[7],Video Timing,Native 60.24Hz,60Hz Compat;",
     "O[8],Boot Warning,Show,Skip;",
+    "O[9],Autosave Hiscores,Off,On;",
     "-;",
     "DIP;",
     "-;",
@@ -74,6 +75,9 @@ assign BUTTONS = 0;
   wire [21:0] gamma_bus;
 
   wire        ioctl_download;
+  wire        ioctl_upload;
+  wire        ioctl_upload_req;
+  wire  [7:0] ioctl_din;
   wire        ioctl_wr;
   wire [26:0] ioctl_addr;
   wire  [7:0] ioctl_dout;
@@ -97,6 +101,11 @@ assign BUTTONS = 0;
     .ioctl_dout(ioctl_dout),
     .ioctl_index(ioctl_index),
     .ioctl_wait(dl_busy),
+
+    .ioctl_upload(ioctl_upload),
+    .ioctl_upload_req(ioctl_upload_req),
+    .ioctl_upload_index(8'd4),
+    .ioctl_din(ioctl_din),
 
     .joystick_0(joystick_0),
     .joystick_1(joystick_1)
@@ -149,8 +158,11 @@ assign BUTTONS = 0;
 
     .i_oki_addr(oki_addr), .o_oki_data(oki_data), .o_oki_ok(oki_ok),
 
-    .i_sr3_req(sr3_req), .i_sr3_we(sr3_we), .i_sr3_addr(sr3_addr),
-    .i_sr3_wdata(sr3_wdata), .i_sr3_be(sr3_be),
+    .i_sr3_req(hs_owns ? hsq_pend : sr3_req),
+    .i_sr3_we(hs_owns ? 1'b1 : sr3_we),
+    .i_sr3_addr(hs_owns ? hsq_addr : sr3_addr),
+    .i_sr3_wdata(hs_owns ? hsq_data : sr3_wdata),
+    .i_sr3_be(hs_owns ? hsq_be : sr3_be),
     .o_sr3_rdata(sr3_rdata), .o_sr3_ack(sr3_ack),
 
     .i_dl_wr(ioctl_wr && rom_load),
@@ -222,7 +234,7 @@ assign BUTTONS = 0;
     .o_oki_addr(oki_addr), .i_oki_data(oki_data), .i_oki_ok(oki_ok),
     .o_sr3_req(sr3_req), .o_sr3_we(sr3_we), .o_sr3_addr(sr3_addr),
     .o_sr3_wdata(sr3_wdata), .o_sr3_be(sr3_be),
-    .i_sr3_rdata(sr3_rdata), .i_sr3_ack(sr3_ack),
+    .i_sr3_rdata(sr3_rdata), .i_sr3_ack(sr3_ack & ~hs_owns),
     .o_rom_req(gfx_req), .o_rom_addr(gfx_addr), .o_rom_len(gfx_len),
     .i_rom_data(gfx_data), .i_rom_valid(gfx_valid),
     .i_gfx_size(24'h400000),
@@ -240,6 +252,87 @@ assign BUTTONS = 0;
     .dbg_wda(dbg_wda),
     .dbg_b3e_w0(dbg_b3e_w0), .dbg_b3e_w1(dbg_b3e_w1), .dbg_bank(dbg_bank)
   );
+  // ------------------------------------------------------------------
+  // High score save/restore (MAME hiscore.dat via Hiscores_MiSTer).
+  // Table = sharedram3 bytes 0xFFF2A2-0xFFF2DD (0x3C) + flag 0xFFF2E2
+  // = sr3 words 0xD951-0xD971. A 64-word shadow snoops every CPU write
+  // on the already-muxed sr3 port (both 68000s funnel through it), so
+  // hiscore reads are single-cycle BRAM reads; hiscore restore writes
+  // update the shadow and flush one byte at a time to SDRAM through a
+  // grab-when-idle arbiter (the CPUs' level-held requests always win;
+  // config header spaces writes 128 clks apart so the 1-deep queue
+  // always drains). The sub-CPU sr3 read cache is not invalidated by
+  // restore writes, but only the main CPU touches the score table.
+  // ------------------------------------------------------------------
+  localparam [16:0] HSW0 = 17'h0D951;
+  localparam [16:0] HSW1 = 17'h0D971;
+
+  wire [23:0] hs_ram_addr;
+  wire  [7:0] hs_dout;
+  wire        hs_write;
+
+  hiscore #(
+    .HS_ADDRESSWIDTH(24), .HS_SCOREWIDTH(7),
+    .CFG_ADDRESSWIDTH(2), .CFG_LENGTHWIDTH(1)
+  ) u_hiscore (
+    .clk(clk_sys), .paused(1'b0), .reset(reset), .autosave(status[9]),
+    .ioctl_upload(ioctl_upload), .ioctl_upload_req(ioctl_upload_req),
+    .ioctl_download(ioctl_download), .ioctl_wr(ioctl_wr),
+    .ioctl_addr(ioctl_addr[24:0]), .ioctl_index(ioctl_index[7:0]),
+    .OSD_STATUS(OSD_STATUS),
+    .data_from_hps(ioctl_dout), .data_from_ram(hs_din_q),
+    .ram_address(hs_ram_addr), .data_to_hps(ioctl_din),
+    .data_to_ram(hs_dout), .ram_write(hs_write),
+    .ram_intent_read(), .ram_intent_write(),
+    .pause_cpu(), .configured()
+  );
+
+  reg  [15:0] hs_shadow [0:63];
+  wire [16:0] hs_word = 17'((hs_ram_addr - 24'hFE4000) >> 1);
+  wire [5:0]  hs_sidx = 6'(hs_word - HSW0);
+  wire [1:0]  hs_wbe  = hs_ram_addr[0] ? 2'b01 : 2'b10;
+  reg   [7:0] hs_din_q;
+  reg         hs_write_d;
+  wire        hs_wr_pulse = hs_write && !hs_write_d;
+
+  reg         hsq_pend, hs_owns;
+  reg  [16:0] hsq_addr;
+  reg  [15:0] hsq_data;
+  reg  [1:0]  hsq_be;
+
+  always @(posedge clk_sys) begin
+    hs_write_d <= hs_write;
+    // snoop CPU writes to the score region
+    if (sr3_req && sr3_we && sr3_ack && !hs_owns &&
+        sr3_addr >= HSW0 && sr3_addr <= HSW1) begin
+      if (sr3_be[1]) hs_shadow[6'(sr3_addr - HSW0)][15:8] <= sr3_wdata[15:8];
+      if (sr3_be[0]) hs_shadow[6'(sr3_addr - HSW0)][7:0]  <= sr3_wdata[7:0];
+    end
+    // hiscore restore writes: shadow at once, SDRAM via the queue
+    if (hs_wr_pulse) begin
+      if (hs_wbe[1]) hs_shadow[hs_sidx][15:8] <= hs_dout;
+      if (hs_wbe[0]) hs_shadow[hs_sidx][7:0]  <= hs_dout;
+      hsq_pend <= 1'b1;
+      hsq_addr <= hs_word;
+      hsq_data <= {hs_dout, hs_dout};
+      hsq_be   <= hs_wbe;
+    end
+    hs_din_q <= hs_ram_addr[0] ? hs_shadow[hs_sidx][7:0]
+                               : hs_shadow[hs_sidx][15:8];
+    // grab the SDRAM sr3 port only when the core side is idle
+    if (!hs_owns) begin
+      if (hsq_pend && !sr3_req) hs_owns <= 1'b1;
+    end else if (sr3_ack) begin
+      hsq_pend <= 1'b0;
+      hs_owns  <= 1'b0;
+    end
+    if (reset) begin
+      hsq_pend <= 1'b0;
+      hs_owns  <= 1'b0;
+      hs_write_d <= 1'b0;
+    end
+  end
+
   wire dbg_sub_in_reset, dbg_vdp_write, dbg_line_start;
   wire dbg_rnd_done, dbg_lb_nonzero;
   wire dbg_cpu_past_vectors, dbg_vdp_cs_seen;

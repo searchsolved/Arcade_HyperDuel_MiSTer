@@ -46,6 +46,22 @@
         <dip name="Lives" bits="12,13" ids="5,4,2,3" values="0,1,2,3"/>
     </switches>
 
+    <!-- High score save/restore (Hiscores_MiSTer): MAME hiscore.dat
+         entries for hyprduel. Header: START_WAIT=0xFF, CHECK_WAIT=0xFF,
+         CHECK_HOLD=4, WRITE_HOLD=0x80 (spaces the byte writes so the
+         1-deep SDRAM queue in the shell always drains), REPEAT=1,
+         REPEATWAIT=0x80, PAUSEPAD=0, CHANGEMASK=0. Entries (8 bytes,
+         CFG_LENGTHWIDTH=1): fff2a2 len 3c start 00 end 01; flag byte
+         fff2e2 len 1 start ff end ff. -->
+    <rom index="3" md5="none">
+        <part>
+            00 00 00 ff 00 ff 00 04 00 80 00 01 00 80 00 00
+            00 ff f2 a2 3c 00 01 00
+            00 ff f2 e2 01 ff ff 00
+        </part>
+    </rom>
+    <nvram index="4" size="61"/>
+
     <buttons names="Shot,Change,Bomb,Start,Coin,Service"
              default="A,B,X,Start,Select,L"/>
 
