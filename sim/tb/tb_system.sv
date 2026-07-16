@@ -140,7 +140,10 @@ module tb_system;
     .dbg_rnd_done(), .dbg_lb_nonzero(),
     .dbg_cpu_past_vectors(), .dbg_vdp_cs_seen(),
     .dbg_mrom_word0(), .dbg_mrom_word1(),
-    .dbg_mrom_word2(), .dbg_mrom_word3()
+    .dbg_mrom_word2(), .dbg_mrom_word3(),
+    .dbg_rend_sx2_0(), .dbg_rend_sx2_1(), .dbg_rend_sx2_2(),
+    .dbg_disp_sx2_0(), .dbg_disp_sx2_1(), .dbg_disp_sx2_2(),
+    .dbg_topflags()
     /* verilator lint_on PINCONNECTEMPTY */
   );
 
@@ -725,7 +728,7 @@ module tb_system;
     string gfxpath, outdir;
     int total_frames, dump_every, last_dumped;
     int dump_from, dump_to;
-    int ramp_dump, ramp_dumped;
+    int ramp_dump, ramp_dumped, ramp_stride, ramp_seen, ramp_flast;
 
     begin
       string mrpath, okrpath;
@@ -745,7 +748,12 @@ module tb_system;
     // frame-wide ramp detector is active (finds ramp scenes wherever
     // the attract rotation puts them)
     if (!$value$plusargs("RAMPDUMP=%d", ramp_dump)) ramp_dump = 0;
+    // +RAMPSTRIDE=K: dump every Kth ramp frame so the quota spreads
+    // across all ramp scenes instead of the first one
+    if (!$value$plusargs("RAMPSTRIDE=%d", ramp_stride)) ramp_stride = 1;
     ramp_dumped = 0;
+    ramp_seen = 0;
+    ramp_flast = 0;
     if (!$value$plusargs("GFXSIZE=%d", gfx_size)) gfx_size = 1 << GFX_AW;
 
     $readmemh(gfxpath, gfxrom);
@@ -771,11 +779,16 @@ module tb_system;
     last_dumped = 0;
     while (frames_seen < total_frames) begin
       @(posedge clk);
+      // ramp-frame accounting: once per frame while the detector is active
+      if (frames_seen > ramp_flast && dut.u_vdp.lk_ramp) begin
+        ramp_flast = frames_seen;
+        ramp_seen = ramp_seen + 1;
+      end
       if (frames_seen >= last_dumped + dump_every ||
           (frames_seen > last_dumped &&
            frames_seen >= dump_from && frames_seen <= dump_to) ||
           (frames_seen > last_dumped && ramp_dumped < ramp_dump &&
-           dut.u_vdp.lk_ramp)) begin
+           dut.u_vdp.lk_ramp && (ramp_seen - 1) % ramp_stride == 0)) begin
         if (frames_seen > last_dumped && ramp_dumped < ramp_dump &&
             dut.u_vdp.lk_ramp)
           ramp_dumped = ramp_dumped + 1;

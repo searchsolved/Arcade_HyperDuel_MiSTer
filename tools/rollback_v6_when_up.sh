@@ -2,7 +2,7 @@
 # Waits for the MiSTer to come online (mDNS first, DHCP-safe), then rolls
 # the core back to v6: menu core first (CRT protect), scp, md5 verify, load MRA.
 set -u
-RBF=/Users/leefoot/python_scripts/hyperduel-mister/builds/Hyprduel_v6.rbf
+RBF=/Users/leefoot/python_scripts/hyperduel-mister/builds/Hyprduel_v6probe.rbf
 SSH_OPTS="-o StrictHostKeyChecking=no -o PubkeyAuthentication=no -o ConnectTimeout=5"
 LOCAL_MD5=$(md5 -q "$RBF")
 
@@ -33,7 +33,7 @@ for i in $(seq 1 480); do  # up to 8 hours, 60s interval
   if [ -n "$MRA" ]; then
     sshpass -p 1 ssh $SSH_OPTS $MISTER "echo load_core '$MRA' > /dev/MiSTer_cmd"
   fi
-  echo "ROLLED BACK TO V6 md5=$LOCAL_MD5 at $(date +%H:%M)"
+  echo "V6PROBE DEPLOYED md5=$LOCAL_MD5 at $(date +%H:%M)"
   exit 0
 done
 echo "TIMED OUT waiting for MiSTer"
