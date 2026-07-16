@@ -19,22 +19,45 @@ from collections import defaultdict
 def read_ppm(path):
     with open(path, 'rb') as f:
         magic = f.readline().strip()
-        assert magic == b'P6', f"Not a binary PPM: {magic}"
+        if magic == b'P6':
+            while True:
+                line = f.readline()
+                if not line.startswith(b'#'):
+                    break
+            w, h = map(int, line.split())
+            int(f.readline().strip())
+            data = f.read()
+            rows = []
+            for y in range(h):
+                row = []
+                for x in range(w):
+                    off = (y * w + x) * 3
+                    row.append((data[off], data[off+1], data[off+2]))
+                rows.append(row)
+            return w, h, rows
+        elif magic == b'P3':
+            pass
+        else:
+            raise ValueError(f"Unknown PPM: {magic}")
+    with open(path) as f:
+        f.readline()
         while True:
             line = f.readline()
-            if not line.startswith(b'#'):
+            if not line.startswith('#'):
                 break
         w, h = map(int, line.split())
-        maxval = int(f.readline().strip())
-        data = f.read()
-    rows = []
-    for y in range(h):
-        row = []
-        for x in range(w):
-            off = (y * w + x) * 3
-            row.append((data[off], data[off+1], data[off+2]))
-        rows.append(row)
-    return w, h, rows
+        int(f.readline().strip())
+        vals = []
+        for line in f:
+            vals.extend(int(x) for x in line.split())
+        rows = []
+        for y in range(h):
+            row = []
+            for x in range(w):
+                off = (y * w + x) * 3
+                row.append((vals[off], vals[off+1], vals[off+2]))
+            rows.append(row)
+        return w, h, rows
 
 def row_diff(a, b, shift=0):
     """Mean absolute pixel difference between rows a and b with b shifted."""

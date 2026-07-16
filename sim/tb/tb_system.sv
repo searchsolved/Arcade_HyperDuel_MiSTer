@@ -394,6 +394,14 @@ module tb_system;
   // STEP 2: bank-tag / parity audit
   int         bt_stale_n;   // total stale-bank scanout pixels
   int         bt_stale_l [4]; // stale pixels per line (0-3 only)
+  // in-flight exposure: beam displays a bank whose render is STILL RUNNING.
+  // The renderer draws in passes (tilemaps -> sprites -> resolve), so
+  // mid-render bank content is a partial composite, never a valid image.
+  // Any nonzero count is a hard visual bug regardless of other metrics.
+  int         rt_expose_n;      // exposed pixels
+  int         rt_expose_l [4];  // exposed pixels on lines 0-3
+  int         rt_expose_fr;     // frames with any exposure
+  int         rt_expose_flast;  // last frame counted (edge detect)
   logic [8:0] lk_nv;
   logic [31:0] lk_snap [2];      // [0]=line0, [1]=line2 sy0/sy2 at h0
   logic       lk_changed [2];
@@ -503,6 +511,21 @@ module tb_system;
       bt_stale_n <= bt_stale_n + 1;
       if (dut.u_vdp.vcnt < 9'd4)
         bt_stale_l[dut.u_vdp.vcnt[1:0]] <= bt_stale_l[dut.u_vdp.vcnt[1:0]] + 1;
+    end
+    // in-flight exposure (see declarations): displayed pixel from a bank
+    // matching {frame_par, vcnt} while the renderer is mid-flight on that
+    // same line and parity
+    if (dut.u_vdp.ce_pix && !dut.u_vdp.so_stale && dut.u_vdp.rnd_busy &&
+        32'(dut.u_vdp.hcnt) < 320 && 32'(dut.u_vdp.vcnt) < 224 &&
+        dut.u_vdp.rnd_line == dut.u_vdp.vcnt[7:0] &&
+        dut.u_vdp.cur_par == dut.u_vdp.frame_par) begin
+      rt_expose_n <= rt_expose_n + 1;
+      if (dut.u_vdp.vcnt < 9'd4)
+        rt_expose_l[dut.u_vdp.vcnt[1:0]] <= rt_expose_l[dut.u_vdp.vcnt[1:0]] + 1;
+      if (rt_expose_flast != frames_seen + 1) begin
+        rt_expose_fr <= rt_expose_fr + 1;
+        rt_expose_flast <= frames_seen + 1;
+      end
     end
     // DSW port read log: main CPU reads of 0xE00002 and the data returned
     // (m_asn_d maintained by the bus-trace block above)
@@ -698,6 +721,7 @@ module tb_system;
     string gfxpath, outdir;
     int total_frames, dump_every, last_dumped;
     int dump_from, dump_to;
+    int ramp_dump, ramp_dumped;
 
     begin
       string mrpath, okrpath;
@@ -713,6 +737,11 @@ module tb_system;
     // (blink-constant measurement etc.)
     if (!$value$plusargs("DUMPFROM=%d", dump_from)) dump_from = -1;
     if (!$value$plusargs("DUMPTO=%d",   dump_to))   dump_to   = -1;
+    // +RAMPDUMP=N: additionally dump the first N frames where the
+    // frame-wide ramp detector is active (finds ramp scenes wherever
+    // the attract rotation puts them)
+    if (!$value$plusargs("RAMPDUMP=%d", ramp_dump)) ramp_dump = 0;
+    ramp_dumped = 0;
     if (!$value$plusargs("GFXSIZE=%d", gfx_size)) gfx_size = 1 << GFX_AW;
 
     $readmemh(gfxpath, gfxrom);
@@ -740,7 +769,12 @@ module tb_system;
       @(posedge clk);
       if (frames_seen >= last_dumped + dump_every ||
           (frames_seen > last_dumped &&
-           frames_seen >= dump_from && frames_seen <= dump_to)) begin
+           frames_seen >= dump_from && frames_seen <= dump_to) ||
+          (frames_seen > last_dumped && ramp_dumped < ramp_dump &&
+           dut.u_vdp.lk_ramp)) begin
+        if (frames_seen > last_dumped && ramp_dumped < ramp_dump &&
+            dut.u_vdp.lk_ramp)
+          ramp_dumped = ramp_dumped + 1;
         last_dumped = frames_seen;
         dump_frame(outdir, frames_seen);
         if (frames_seen == 510 || frames_seen == 750) dump_state(outdir, frames_seen);
@@ -789,6 +823,10 @@ module tb_system;
              lk_ramp_frames, rs_eff_mm, lk_cool_n);
     $display("bank stale scanout: total=%0d line0=%0d line1=%0d line2=%0d line3=%0d",
              bt_stale_n, bt_stale_l[0], bt_stale_l[1], bt_stale_l[2], bt_stale_l[3]);
+    $display("%s in-flight exposure: pixels=%0d frames=%0d line0=%0d line1=%0d line2=%0d line3=%0d",
+             (rt_expose_n != 0) ? "FAIL" : "PASS",
+             rt_expose_n, rt_expose_fr,
+             rt_expose_l[0], rt_expose_l[1], rt_expose_l[2], rt_expose_l[3]);
     if (late_fh != 0) $fclose(late_fh);
     $display("render load: div_cycles=%0d ovl_stall_cycles=%0d",
              dut.u_vdp.u_render.dbg_div_cyc, dut.u_vdp.u_render.dbg_ovl_stall);
