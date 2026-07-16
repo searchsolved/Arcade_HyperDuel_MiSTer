@@ -75,7 +75,21 @@ module i4220_vdp #(
     output logic o_dbg_rnd_done,     // renderer ever completed a line
     output logic o_dbg_lb_nonzero,   // linebuf ever had a nonzero pixel
     output logic [15:0] o_dbg_palw,  // count of nonzero palette writes
-    output logic [15:0] o_dbg_ovr    // count of dropped render kicks (overrun)
+    output logic [15:0] o_dbg_ovr,   // count of dropped render kicks (overrun)
+
+    // DEBUG: top-lines provenance (displaced-strip investigation).
+    // rend = layer-2 X view (scroll-window) latched when the line's
+    // render was kicked; disp = the same view at the line's own scanout
+    // (h160). A nonzero rend/disp delta is the expected on-screen
+    // displacement of that line in pixels. topflags = previous frame's
+    // {stale[2:0], tagbad[2:0]} for lines 2..0.
+    output logic [15:0] o_dbg_rend_sx2_0,
+    output logic [15:0] o_dbg_rend_sx2_1,
+    output logic [15:0] o_dbg_rend_sx2_2,
+    output logic [15:0] o_dbg_disp_sx2_0,
+    output logic [15:0] o_dbg_disp_sx2_1,
+    output logic [15:0] o_dbg_disp_sx2_2,
+    output logic [15:0] o_dbg_topflags
 );
 
   localparam int H_VIS = 320, H_TOTAL = 424;
@@ -1084,6 +1098,48 @@ module i4220_vdp #(
       so_stale <= (bank_tag[vcnt[1:0]] != {frame_par, vcnt[7:0]});
     end
   end
+
+  // ------------------------------------------------------------------
+  // DEBUG: top-lines provenance latches (see port comment). Pure
+  // registered captures off existing signals; nothing feeds back into
+  // the render or scanout paths.
+  // ------------------------------------------------------------------
+  logic [2:0] dbg_tagbad, dbg_stale;      // accumulate over the frame
+  logic [2:0] dbg_tagbad_q, dbg_stale_q;  // previous frame, snapshot-stable
+  always_ff @(posedge clk) begin
+    if (!rst_n) begin
+      dbg_tagbad <= '0;   dbg_stale <= '0;
+      dbg_tagbad_q <= '0; dbg_stale_q <= '0;
+    end else begin
+      if (rnd_start && rnd_line < 8'd3) begin
+        case (rnd_line[1:0])
+          2'd0: o_dbg_rend_sx2_0 <= rs_sw_x[2];
+          2'd1: o_dbg_rend_sx2_1 <= rs_sw_x[2];
+          default: o_dbg_rend_sx2_2 <= rs_sw_x[2];
+        endcase
+      end
+      if (ce_pix && vcnt < 9'd3 && hcnt == 9'd160) begin
+        case (vcnt[1:0])
+          2'd0: o_dbg_disp_sx2_0 <= rs_sw_x[2];
+          2'd1: o_dbg_disp_sx2_1 <= rs_sw_x[2];
+          default: o_dbg_disp_sx2_2 <= rs_sw_x[2];
+        endcase
+        if (bank_tag[vcnt[1:0]] != {frame_par, vcnt[7:0]})
+          dbg_tagbad[vcnt[1:0]] <= 1'b1;
+        if (so_stale)
+          dbg_stale[vcnt[1:0]] <= 1'b1;
+      end
+      // frame boundary: publish last frame's flags, clear accumulators
+      // (h0 of line 0 is before this frame's h160 captures)
+      if (ce_pix && vcnt == 9'd0 && hcnt == 9'd0) begin
+        dbg_tagbad_q <= dbg_tagbad;
+        dbg_stale_q  <= dbg_stale;
+        dbg_tagbad   <= '0;
+        dbg_stale    <= '0;
+      end
+    end
+  end
+  assign o_dbg_topflags = {5'b0, dbg_stale_q, 5'b0, dbg_tagbad_q};
 
   // so_pen declared at u_palette instantiation
   logic [15:0] so_pal;

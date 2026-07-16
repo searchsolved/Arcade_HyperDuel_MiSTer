@@ -251,7 +251,12 @@ assign BUTTONS = 0;
     .dbg_wadr(dbg_wadr), .dbg_wcnt(dbg_wcnt), .dbg_srrc(dbg_srrc),
     .dbg_ovr(dbg_ovr),
     .dbg_wda(dbg_wda),
-    .dbg_b3e_w0(dbg_b3e_w0), .dbg_b3e_w1(dbg_b3e_w1), .dbg_bank(dbg_bank)
+    .dbg_b3e_w0(dbg_b3e_w0), .dbg_b3e_w1(dbg_b3e_w1), .dbg_bank(dbg_bank),
+    .dbg_rend_sx2_0(dbg_rend_sx2_0), .dbg_rend_sx2_1(dbg_rend_sx2_1),
+    .dbg_rend_sx2_2(dbg_rend_sx2_2),
+    .dbg_disp_sx2_0(dbg_disp_sx2_0), .dbg_disp_sx2_1(dbg_disp_sx2_1),
+    .dbg_disp_sx2_2(dbg_disp_sx2_2),
+    .dbg_topflags(dbg_topflags)
   );
   // ------------------------------------------------------------------
   // High score save/restore (MAME hiscore.dat via Hiscores_MiSTer).
@@ -343,6 +348,9 @@ assign BUTTONS = 0;
   wire [15:0] dbg_wadr, dbg_wcnt, dbg_srrc, dbg_ovr;
   wire [15:0] dbg_wda [0:3];
   wire [15:0] dbg_b3e_w0, dbg_b3e_w1, dbg_bank;
+  wire [15:0] dbg_rend_sx2_0, dbg_rend_sx2_1, dbg_rend_sx2_2;
+  wire [15:0] dbg_disp_sx2_0, dbg_disp_sx2_1, dbg_disp_sx2_2;
+  wire [15:0] dbg_topflags;
 
   // ------------------------------------------------------------------
   // video: 320x224, RGB555 expanded to 8:8:8 through arcade_video
@@ -405,6 +413,9 @@ assign BUTTONS = 0;
   reg [15:0] s_sums, s_sumb1, s_sumb2;
   reg [7:0]  s_reset_count;
   reg [7:0]  s_flags;
+  reg [15:0] s_rend0, s_rend1, s_rend2;
+  reg [15:0] s_disp0, s_disp1, s_disp2;
+  reg [15:0] s_topflags;
   always @(posedge clk_sys)
     if (vbl & ce_pix) begin
       s_selftest    <= dbg_selftest;
@@ -436,6 +447,13 @@ assign BUTTONS = 0;
       s_sums        <= dbg_sums;
       s_sumb1       <= dbg_ovr;      // overrun count (repurposed row)
       s_sumb2       <= dsw;          // live DSW word (DIP debug, was p1p2)
+      s_rend0       <= dbg_rend_sx2_0;
+      s_rend1       <= dbg_rend_sx2_1;
+      s_rend2       <= dbg_rend_sx2_2;
+      s_disp0       <= dbg_disp_sx2_0;
+      s_disp1       <= dbg_disp_sx2_1;
+      s_disp2       <= dbg_disp_sx2_2;
+      s_topflags    <= dbg_topflags;
       // band 8 = lb_nonzero: renderer ever produced a non-black pixel
       // (download liveness is proven by the DLCT/DLWR rows instead)
       s_flags       <= {led_mrom_saw, dbg_vdp_cs_seen, dbg_vdp_write,
@@ -476,15 +494,28 @@ assign BUTTONS = 0;
          (dbg_vcnt >= 9'd192 && dbg_vcnt < 9'd212) ? 4'd8 : 4'd15;
     p1_hex_row <= hr;
 
+    // Top-lines provenance layout (labels are legacy, read by position):
+    //   row 0 (SUMS): line 0 sx2 view at render kick
+    //   row 1 (OVRC): line 0 sx2 view at scanout h160
+    //   row 2 (P1P2): live DSW word (unchanged)
+    //   row 3 (B3E0): line 1 sx2 at render kick
+    //   row 4 (SCTL): line 1 sx2 at scanout
+    //   row 5 (WCNT): line 2 sx2 at render kick
+    //   row 6 (SRRC): line 2 sx2 at scanout
+    //   row 7 (CRST): topflags {xxxx, stale2..0, xxxx, tagbad2..0}
+    //   row 8 (FSMQ): unchanged
+    // rend != disp on a row pair = that line rendered with a stale
+    // scroll value; delta = displacement in pixels. Nonzero row 7 =
+    // bank tag/parity mismatch reaching scanout.
     case (hr)
-      4'd0: p1_hex_val <= s_sums;                 // single-read checksum (expect BE3A)
-      4'd1: p1_hex_val <= s_sumb1;                // OVRC: dropped render kicks
-      4'd2: p1_hex_val <= s_sumb2;                // P1P2: live input word
-      4'd3: p1_hex_val <= s_b3e_w0;               // bank-3E window word0 (expect 4D55)
-      4'd4: p1_hex_val <= {s_subctl, s_iack1};    // SCTL/IAK1
-      4'd5: p1_hex_val <= s_wcnt;                 // WCNT: GFX-window read count
-      4'd6: p1_hex_val <= s_srrc;                 // SRRC: main sr3 read acks
-      4'd7: p1_hex_val <= {s_reset_count, s_dl_dropped[7:0]};
+      4'd0: p1_hex_val <= s_rend0;
+      4'd1: p1_hex_val <= s_disp0;
+      4'd2: p1_hex_val <= s_sumb2;                // P1P2: live DSW word
+      4'd3: p1_hex_val <= s_rend1;
+      4'd4: p1_hex_val <= s_disp1;
+      4'd5: p1_hex_val <= s_rend2;
+      4'd6: p1_hex_val <= s_disp2;
+      4'd7: p1_hex_val <= s_topflags;
       default: p1_hex_val <= s_fsm_info;
     endcase
 
