@@ -535,12 +535,16 @@ module tb_system;
       dswrd_n <= dswrd_n + 1;
     end
     // registered (scroll - window) view must track the registers with
-    // exactly 1 clk lag (no prediction mux with real-time lines 0/1)
+    // exactly 1 clk lag; line-1 renders see the predicted fg values
     exp_sy0 <= dut.u_vdp.r_scroll[0] - dut.u_vdp.r_window[0];
-    exp_sx0 <= dut.u_vdp.r_scroll[1] - dut.u_vdp.r_window[1];
-    exp_sy1 <= dut.u_vdp.r_scroll[2] - dut.u_vdp.r_window[2];
-    exp_sx1 <= dut.u_vdp.r_scroll[3] - dut.u_vdp.r_window[3];
-    exp_sx2 <= dut.u_vdp.r_scroll[5] - dut.u_vdp.r_window[5];
+    exp_sx0 <= dut.u_vdp.rnd_line1 ? dut.u_vdp.pred_sw[1]
+             : dut.u_vdp.r_scroll[1] - dut.u_vdp.r_window[1];
+    exp_sy1 <= dut.u_vdp.rnd_line1 ? dut.u_vdp.pred_sw[2]
+             : dut.u_vdp.r_scroll[2] - dut.u_vdp.r_window[2];
+    exp_sx1 <= dut.u_vdp.rnd_line1 ? dut.u_vdp.pred_sw[3]
+             : dut.u_vdp.r_scroll[3] - dut.u_vdp.r_window[3];
+    exp_sx2 <= dut.u_vdp.rnd_line1 ? dut.u_vdp.pred_sw[5]
+             : dut.u_vdp.r_scroll[5] - dut.u_vdp.r_window[5];
     if (frames_seen > 0 &&
         (dut.u_vdp.rs_sw_y[0] !== exp_sy0 ||
          dut.u_vdp.rs_sw_x[0] !== exp_sx0 ||
