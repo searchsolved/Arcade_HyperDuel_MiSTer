@@ -22,6 +22,46 @@ the photographed 4 MHz crystal, so fitting the recording's tune tempo
 against the crystal-exact simulation calibrates the capture chain's
 clock to ~200 ppm (docs/plan_refresh_measurement.md, method C).
 
+## Second window: the boot silence
+
+The first 4.45 s of the same recording (the Technosoft Presents
+screen, before the title jingle) are silent - about 25x quieter than
+the music. Regenerate with:
+
+    python3 tools/hum_evidence.py reference/hyprduel_1cc_pcb.mp4 \
+        0 4.45 videoA_boot 1.00021
+
+Result (`spectrum_harm_videoA_boot.png`, `hum_isolated_videoA_boot.wav`):
+the second harmonic reads 120.4834 Hz raw - identical to four decimal
+places with the window from 22 minutes later, with the same two-peak
+structure (mains resolved at 120.00 alongside it). The board's rate is
+constant across the entire session, measured at both ends of the
+recording. Caveat stated plainly: in this short window the
+FUNDAMENTAL band cannot separate the 60.00/60.24 pair (0.24 Hz apart
+against a ~0.23 Hz natural resolution), so its blended peak reads
+60.13 and is not used; the harmonic band separates its pair (0.48 Hz)
+cleanly, which is why the harmonic is the discriminator throughout.
+
+## Third window: an independent board, venue and chain
+
+A second PCB recording from a different uploader
+(https://www.youtube.com/watch?v=NYtmwY3_Jw4, audio saved as
+`reference/hyprduel_pcb_NYtm.webm`) is silent for its first 9 seconds.
+Regenerate with:
+
+    python3 tools/hum_evidence.py reference/hyprduel_pcb_NYtm.webm \
+        0 8.9 videoC 1.0
+
+Result (`spectrum_harm_videoC.png` etc.): fundamental 60.2303 Hz,
+harmonic 120.4720 Hz, both at very high SNR, with the same two-peak
+structure - that venue's mains also resolved at exactly 120.00 Hz
+beside the board's line. No chain correction is applied (no tempo
+anchor has been fitted for this recording); the in-spectrum mains
+line bounds the chain error directly. A different physical board in a
+different venue through a different capture chain agrees with video A
+to about 0.01 percent, and both sit on the 424 x 261 prediction of
+60.2408 Hz.
+
 ## Files
 
 - `spectrum_fund_videoA.png`: 55-65 Hz. The line sits at 60.236 Hz raw,

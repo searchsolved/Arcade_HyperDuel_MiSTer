@@ -77,7 +77,7 @@ Decode the indexed parameter writes in `crtc_vert_w` (and presumably `crtc_horz_
 
 Related: the driver's `screen.set_refresh_hz(60)` is commented "Unknown/Unverified". I measured the real board's refresh at 60.24 Hz using three independent methods that agree, on two different PCB recordings: crystal-locked music tempo as the timebase anchor (the YM2151 is clocked by the photographed 4 MHz crystal, so fitting the recording's tune tempo against crystal-exact emulation calibrates each capture chain to ~200 ppm), frame-counted script intervals (a 248-frame game constant between the title jingle key-on and the announcer trigger plays 0.33 percent faster on both hardware recordings than a 60.011 Hz emulation; the two independent recordings agree to 0.007 percent), and the board's own vertical-rate electrical pickup present in the recordings as a narrow spectral line.
 
-The pickup evidence is attached. The high-resolution spectrum of an 11-second quiet window resolves TWO peaks side by side: real mains hum at exactly 120.00 Hz, and the board's line at 120.48 Hz, about 15 dB stronger. The mains peak sitting precisely at 120.00 in the same spectrum demonstrates the chain's frequency axis is accurate at that exact point, so the 120.48 line cannot be mislabeled mains; in the bandpass-isolated audio the two sources are audible beating against each other at about 0.5 Hz. 60.24 Hz is consistent with a 424 x 261 raster at 26.666 MHz / 4:
+The pickup evidence is attached, from quiet windows in recordings of TWO different physical boards (different uploaders, venues and capture chains). In each, the high-resolution spectrum resolves TWO peaks side by side: real mains hum at exactly 120.00 Hz, and the board's line beside it, 10 to 15 dB stronger - 120.483 Hz in one recording (identical to four decimal places in quiet windows 22 minutes apart, so the rate is stable across a session) and 120.472 Hz in the other. The mains peak sitting precisely at 120.00 in the same spectra demonstrates each chain's frequency axis is accurate at that exact point, so the board line cannot be mislabeled mains; in the bandpass-isolated audio the two sources are audible beating against each other at about 0.5 Hz. Two independent boards agreeing to about 0.01 percent, both consistent with a 424 x 261 raster at 26.666 MHz / 4:
 
 ```
 screen.set_raw(XTAL(26'666'000) / 4, 424, 0, 320, 261, 2, 226);
@@ -89,15 +89,16 @@ Since imagetek_i4100 is shared across the metro.cpp family, other titles presuma
 
 Additional corroboration from the game's own behavior: it services exactly 261 raster interrupt lines per frame; the 262nd line the current totals assume was never addressed by the game, because it does not exist on hardware.
 
-Attached: the two hum spectra (fundamental and second harmonic, mains position marked) and the bandpass-isolated hum audio (zipped WAV). Full register write traces (CSV) and the remaining measurement data available on request.
+Attached: hum spectra from both boards (second harmonic with the mains position marked, plus the fundamental for board A) and the bandpass-isolated hum audio (zipped WAV). Full register write traces (CSV) and the remaining measurement data available on request.
 
 ---
 
 Notes for Lee (not part of the issue):
 - Post at: https://github.com/mamedev/mame/issues/new (plain issue).
-- Drag these three files into the issue body as attachments (all in
+- Drag these four files into the issue body as attachments (all in
   docs/evidence/refresh/): spectrum_harm_videoA.png,
-  spectrum_fund_videoA.png, hum_isolated_videoA.zip.
+  spectrum_harm_videoC.png, spectrum_fund_videoA.png,
+  hum_isolated_videoA.zip.
 - The "frame/vpos" numbers come from our deterministic sim boot; they are stable across runs and stated as such.
 - MAME version claim: artifacts confirmed in 0.288 on this machine; device/driver code confirmed unchanged in master today.
 - If they ask for the FPGA implementation, the core is pre-release; share at your discretion (public release imminent anyway).
