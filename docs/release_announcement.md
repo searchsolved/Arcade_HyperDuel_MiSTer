@@ -6,7 +6,8 @@
 
 First FPGA implementation of the Imagetek I4220 video chip, running
 Technosoft's Hyper Duel (1993). Playable start to finish, verified
-against MAME frame by frame and against real hardware beyond that.
+against MAME frame by frame, and beyond that against board
+photographs and original-PCB recordings.
 
 Features:
 - High score autosave
@@ -35,10 +36,13 @@ with reproduction steps, and an upstream report for MAME is included.
 Hyper Duel (Technosoft, 1993) is now available for MiSTer. This one is
 the first FPGA implementation of any Imagetek video chip (the I4220;
 the same family drives the whole Metro arcade catalogue), built from
-MAME's reverse engineering as the starting oracle and then verified
-against real hardware: board photographs for the clock tree and bus
-widths, and original-PCB recordings analysed down to individual
-scanlines and spectral lines.
+MAME's reverse engineering as the starting oracle and then checked
+against the strongest hardware evidence available without probing a
+live board: board photographs for the clock tree and bus widths, and
+original-PCB recordings analysed down to individual scanlines and
+spectral lines. No logic analyser has touched a real board for this
+project; the accuracy documentation states which claims rest on which
+evidence, and what cannot be verified without one.
 
 Some things came out of the verification work that were not previously
 documented anywhere:

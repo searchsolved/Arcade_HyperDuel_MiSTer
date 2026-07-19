@@ -68,7 +68,7 @@ NOT calibrate write timing against MAME here, deliberately.
 
 ### 3.2 Resolved: OKI clock and OKI:YM mix balance, both measured
 
-- **OKI clock = 2.000 MHz, measured from real hardware (2026-07-11).**
+- **OKI clock = 2.000 MHz, measured from a PCB recording (2026-07-11).**
   Method: the title-screen announcer sample is identical ROM bytes on
   the real board and in this core, so its pitch ratio equals the clock
   ratio. Log-spectral alignment of the sample from the PCB 1cc capture

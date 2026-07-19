@@ -5,10 +5,14 @@ built around the first FPGA implementation of the **Imagetek I4220**
 video chip - the VDP behind the entire Metro Corp. arcade catalogue
 (I4100/I4220/I4300 are close variants). No datasheet for this chip has
 ever surfaced: the implementation was built against MAME as a
-machine-checked oracle, then verified past it against the hardware
-itself - board photographs for the clock tree and bus widths, and
-original-PCB recordings analysed down to individual scanlines and
-spectral lines.
+machine-checked oracle, then checked beyond it against the strongest
+hardware evidence obtainable without probing a live board -
+photographs of the PCB and die for the clock tree, bus widths and part
+numbers, and original-PCB recordings analysed down to individual
+scanlines and spectral lines. To be clear about the claim: no logic
+analyser or scope has been near a real TEC442-A for this project.
+[docs/ACCURACY.md](docs/ACCURACY.md) states which claims rest on which
+evidence, and what remains unverifiable without one.
 
 That verification went deep enough to surface things nobody had
 documented:
@@ -107,7 +111,7 @@ commands in [docs/ACCURACY.md](docs/ACCURACY.md)): blitter output word
 for word, rendered frames pixel for pixel, full-system boot RAM state
 at checkpoints, audio event timing.
 
-**Verified against real hardware, beyond MAME**: all three board
+**Checked against hardware evidence, beyond MAME**: all three board
 oscillators read from photographs match the emulation's assumed values;
 the I4220 part number read off the die; an original-PCB 1cc recording
 analysed frame by frame (80,760 frames) proving the real board never
