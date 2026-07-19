@@ -1,0 +1,25 @@
+{
+  "db_id": "searchsolved/hyperduel",
+  "timestamp": 1784470262,
+  "files": {
+    "_Arcade/cores/hyprduel_20260719.rbf": {
+      "hash": "87b6ee7d275b96c4b01a635fac204335",
+      "size": 4309944,
+      "url": "https://github.com/searchsolved/Arcade_HyperDuel_MiSTer/releases/download/v1.0/Hyprduel_20260719.rbf"
+    },
+    "_Arcade/Hyper Duel.mra": {
+      "hash": "4126e85fd8546d465ccef53530f5b66a",
+      "size": 3905,
+      "url": "https://github.com/searchsolved/Arcade_HyperDuel_MiSTer/releases/download/v1.0/Hyper.Duel.mra"
+    },
+    "_Arcade/Hyper Duel (Set 2).mra": {
+      "hash": "a8aaa9d349aee5f8d3206bd3d3d8cdf7",
+      "size": 3986,
+      "url": "https://github.com/searchsolved/Arcade_HyperDuel_MiSTer/releases/download/v1.0/Hyper.Duel.Set.2.mra"
+    }
+  },
+  "folders": {
+    "_Arcade": {},
+    "_Arcade/cores": {}
+  }
+}

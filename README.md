@@ -16,6 +16,25 @@ date has cropped, and minus two scratch lines every emulator to date
 has wrongly displayed. The renderer measures zero missed scanlines
 across long stress simulations.
 
+## Install
+
+**With update_all / downloader** (recommended): add this to
+`/media/fat/downloader.ini` and run update_all - the core and both
+MRAs install and stay current automatically:
+
+```ini
+[searchsolved/hyperduel]
+db_url = https://raw.githubusercontent.com/searchsolved/Arcade_HyperDuel_MiSTer/main/hyperduel_db.json
+```
+
+**Manually**: grab the RBF and MRAs from the
+[latest release](https://github.com/searchsolved/Arcade_HyperDuel_MiSTer/releases/latest),
+put the RBF in `/media/fat/_Arcade/cores/` and the MRAs in
+`/media/fat/_Arcade/`.
+
+Either way you need the MAME `hyprduel` ROM set (0.288 naming) in
+`/media/fat/games/mame/`. No ROM data is included here.
+
 ## Controls and options
 
 Buttons: Shot, Change (transform), Bomb + Start/Coin/Service. DIPs are

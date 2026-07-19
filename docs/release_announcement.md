@@ -75,4 +75,6 @@ reusable: Magical Error wo Sagase shares this exact board and is the
 natural next target, and collaborators interested in the wider Metro
 family are very welcome.
 
-Repo: [link]  |  Accuracy documentation: docs/ACCURACY.md
+Repo: https://github.com/searchsolved/Arcade_HyperDuel_MiSTer
+Release: https://github.com/searchsolved/Arcade_HyperDuel_MiSTer/releases/tag/v1.0
+Accuracy documentation: https://github.com/searchsolved/Arcade_HyperDuel_MiSTer/blob/main/docs/ACCURACY.md
