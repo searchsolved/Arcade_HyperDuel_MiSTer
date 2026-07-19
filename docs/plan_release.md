@@ -6,8 +6,8 @@ Goal: first public Imagetek I4220 core. This doc is the gap between
 ## Phase R1: lock down (current, nearly done)
 
 - [x] Prescan + tag blanking + 2px emit + 16-bit fetch (sim-verified)
-- [ ] Deploy combined build, STA gate, CRT bomb/jitter test  <- NEXT, needs home LAN
-- [ ] Commit everything (six logical changes, each parity-gated)
+- [x] Deploy combined build, STA gate, CRT bomb/jitter test
+- [x] Commit everything (through 770f013, v15)
 - [ ] 30-minute human soak: full game credit-feed playthrough on CRT
       (stages exercise content the attract never shows: bosses, stage
       transitions, the vertical stage if any)
@@ -169,13 +169,12 @@ No other game is MRA-only; each tier is RTL work:
    Announce I4220 reusability in the hyprduel release notes to attract
    collaborators.
 
-## Known deviation to document in README (added 2026-07-11)
+## RESOLVED 2026-07-19: the top-lines deviation no longer exists
 
-Top ~4 visible lines: parallax offset is one frame stale. The game
-writes per-line scroll just-in-time at each hblank; the renderer (like
-the real line-buffered I4220) draws one line ahead of the beam, so the
-first lines of each frame use vblank-parked values. Authenticity
-UNDETERMINED - the real chip likely behaved identically (same lead) and
-arcade bezels hid these lines; resolve via real-PCB footage if ever.
-Do NOT "fix" without a reference. MiSTer vertical crop reproduces the
-cabinet presentation.
+The "top ~4 visible lines" deviation described in earlier revisions of
+this plan was fully root-caused and eliminated (ACCURACY.md 3.3): the
+game programs the CRTC vertical display window to start at chip line 2,
+so those lines were a hidden work area the real monitor never showed.
+v15 implements the programmed window; the CRT shows what the arcade
+monitor showed. Nothing to document as a deviation; documented instead
+as a finding (README, docs/mame_bug_report.md).

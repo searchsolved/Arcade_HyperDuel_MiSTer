@@ -274,7 +274,7 @@ a logic analyser on a live board or a decap:
 
 Any core for this hardware, however written, shares this list.
 
-### 3.6 Measured, correction pending: refresh rate is 60.24 Hz, this core still ships 60.011 Hz
+### 3.6 Resolved: refresh rate measured at 60.24 Hz and shipped (native default, 60 Hz compat option)
 
 Nobody had measured this board's refresh; MAME's 60 Hz is flagged
 unverified in its own history. Measured 2026-07-12 from the two
@@ -294,7 +294,14 @@ independent PCB recordings, three methods that fail differently
    vertical-rate pickup as a narrow spectral line in silent segments
    (SNR up to ~400): 60.236-60.250 Hz chain-corrected, second
    harmonic at 120.48 Hz. Not mains: US grid is 60.000 +- ~0.02% and
-   its harmonic would sit at 120.00.
+   its harmonic would sit at 120.00. **Listenable/inspectable evidence
+   is banked in docs/evidence/refresh/** (regenerate with
+   tools/hum_evidence.py): the isolated hum audio and high-resolution
+   spectra. The harmonic spectrum resolves BOTH lines side by side -
+   real mains hum at exactly 120.00 Hz and the board's line at 120.48,
+   ~15 dB stronger - so the chain's frequency axis is self-verifying
+   and the ~0.5 Hz beat between the two sources is audible in the
+   isolated audio.
 
 All three select dot totals of 424 x 261 = 60.2408 Hz at the
 photo-verified 26.6660/4 MHz dot clock. Corroboration already in this
@@ -304,12 +311,10 @@ exist on hardware. Music/sample pitch are unaffected (crystal-clocked)
 - on real hardware the game simply runs 0.38% faster than its music
 would suggest.
 
-Status: the RTL still uses MAME's assumed 424 x 262 (60.011 Hz), so
-this core currently plays 0.38% slower than a real PCB. The one-line
-V_TOTAL correction is deliberately queued behind its own full
-re-verification ladder (the vblank write geometry shifts, so the
-raster freshness analysis in 3.3 must be redone against the new frame
-shape) rather than shipped as a rider on an audio build.
+Status: shipped. The core runs 424 x 261 (60.2408 Hz) natively with
+an OSD "Video Timing" option for a 60 Hz compat mode (some displays
+dislike 60.24); the raster freshness work in 3.3 was subsequently
+redone against the 261-line frame as required.
 
 ## 4. What we do NOT claim
 

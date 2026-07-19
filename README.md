@@ -8,9 +8,21 @@ ever surfaced; the implementation was built against MAME as a
 machine-checked oracle and verified beyond it against real hardware
 (board photographs and original-PCB footage).
 
-Status: pre-release, playable start to finish on hardware. The renderer
-measures zero missed scanlines across long stress simulations; the
-remaining pre-release work is tracked in `docs/plan_next_steps.md`.
+Status: released. Playable start to finish on hardware with high-score
+autosave, the measured-native 60.24 Hz video timing (60 Hz compat
+option in the OSD for strict displays), and the real display window the
+arcade monitor showed - including two picture lines every emulator to
+date has cropped, and minus two scratch lines every emulator to date
+has wrongly displayed. The renderer measures zero missed scanlines
+across long stress simulations.
+
+## Controls and options
+
+Buttons: Shot, Change (transform), Bomb + Start/Coin/Service. DIPs are
+set from the OSD (Coinage including Free Play, Demo Sounds, Difficulty,
+Lives, Flip Screen). OSD options: scandoubler effects, Video Timing
+(Native 60.24 Hz / 60 Hz Compat), Boot Warning screen (Show/Skip),
+Autosave Hiscores.
 
 ## Accuracy
 
@@ -34,8 +46,8 @@ the point.
 ## Research: what MAME gave us, what we verified, what's new
 
 The only functional documentation of the I4220 is [MAME's
-`imagetek_i4100.cpp`](https://github.com/mamedev/mame/blob/master/src/mame/shared/imagetek_i4100.cpp)
-and the [`hyprduel.cpp`](https://github.com/mamedev/mame/blob/master/src/mame/technosoft/hyprduel.cpp)
+`imagetek_i4100.cpp`](https://github.com/mamedev/mame/blob/master/src/devices/video/imagetek_i4100.cpp)
+and the [`hyprduel.cpp`](https://github.com/mamedev/mame/blob/master/src/mame/metro/hyprduel.cpp)
 driver - decades of black-box reverse engineering by Luca Elia, David
 Haywood, Angelo Salese and contributors, vendored in `reference/mame/`.
 That work is the foundation of this core: register semantics, tile and
@@ -66,10 +78,14 @@ documented anywhere, to our knowledge):
   plays 0.33% faster on hardware than at 60.011 Hz; (3) the board's own
   vertical-rate **electrical pickup is visible as a spectral line in the
   recordings' silent moments**: 60.24-60.25 Hz chain-corrected, second
-  harmonic at 120.48 Hz (US mains would be 60.000/120.00, regulated to
-  ~0.02%). All three select dot totals of 424 x 261 = 60.2408 Hz -
+  harmonic at 120.48 Hz. The isolated hum audio and spectra are banked
+  in `docs/evidence/refresh/` - the harmonic spectrum resolves real
+  mains hum at exactly 120.00 Hz alongside the board's line at 120.48,
+  about 15 dB stronger, so the claim is checkable by eye and by ear.
+  All three methods select dot totals of 424 x 261 = 60.2408 Hz -
   corroborated by the game itself, which programs raster interrupts for
-  exactly 261 lines and never addresses a 262nd.
+  exactly 261 lines and never addresses a 262nd. This core ships that
+  timing natively (with a 60 Hz compat OSD option).
 - **The OKI M6295 clock is 2.000 MHz** (4 MHz crystal / 2), measured
   from PCB footage by sample-pitch ratio to 0.05%. MAME's value
   (2.0625 MHz, marked `not verified` in its own source) is ~3% sharp -
@@ -84,10 +100,20 @@ documented anywhere, to our knowledge):
 - **The game requests a raster interrupt on all 261 lines per frame
   and real timing services every one**; write-log comparison shows
   MAME missing ~14% of them (visible as stepped parallax).
-- **MAME's "many CRTC writes" mystery characterised**: the game's
-  per-line handler maintains a line-indexed CRTC-horizontal write on
-  every line, always (655k writes per attract cycle), with no visible
-  effect on real hardware - safe for implementations to ignore.
+- **MAME's "many CRTC writes" mystery solved, both halves.** The CRTC
+  registers everyone ignores are indexed parameter writes (parameter in
+  the high byte, value in the low byte, gated by the unlock register),
+  and the vertical set programs the display window: first visible line
+  2, active span 224, vsync start 233, vsync end 240 - textbook NTSC
+  placement in a 261-line frame. **A real monitor shows chip lines
+  2-225; lines 0-1 are a hidden work area** where the game parks its
+  scroll scratch accumulator and raster-effect outliers. Every
+  "top-line artifact" in emulation of this game is those hidden lines
+  being wrongly displayed by a hardcoded 0-223 visible area. The
+  massive per-line CRTC-horizontal write volume (655k per attract
+  cycle) happens with the lock engaged: no-ops on hardware. This core
+  implements the programmed window; the fix and evidence are written
+  up for MAME in [docs/mame_bug_report.md](docs/mame_bug_report.md).
 - **The GFX bus is 64 bits wide** - four 16-bit mask ROMs read in
   parallel (implied by MAME's loading macro, confirmed by board
   photography) - which sets the sprite-bandwidth envelope any
@@ -96,13 +122,12 @@ documented anywhere, to our knowledge):
   effective update rate drops to ~38 Hz at the stage-6 boss and
   ~46-47 Hz in two other stretches - reproduced here for free by
   cycle-accurate CPUs, and now checkable rather than anecdotal.
-- One MAME-flagged unknown remains open: the top-of-frame raster
-  phase behaviour (docs/ACCURACY.md section 3.3). The refresh-rate
-  correction (this core currently ships MAME's 262-line timing, 0.38%
-  slow) is queued behind its own re-verification pass, since it changes
-  game speed. A draft upstream note for MAME covering the clock,
-  refresh and balance corrections is in
-  [docs/mame_upstream_note.md](docs/mame_upstream_note.md).
+- **The game's scroll registers run two write disciplines** (measured
+  in simulation and confirmed on FPGA silicon with a write-landing
+  histogram probe): per-line ladder registers rewritten every line on
+  schedule, and a once-per-frame block landing during line 0. The full
+  investigation - from artifact through silicon telemetry to the CRTC
+  answer - is documented in docs/ACCURACY.md section 3.3.
 
 ## Architecture
 
@@ -120,8 +145,10 @@ documented anywhere, to our knowledge):
 ## ROMs
 
 This repository and the released core contain **no game ROM data**.
-Load the core through `mra/Hyper Duel.mra` with a user-supplied MAME
-`hyprduel` ROM set in `games/mame/`.
+Load the core through `mra/Hyper Duel.mra` (or
+`mra/Hyper Duel (Set 2).mra` for the alternate program ROM revision)
+with a user-supplied MAME `hyprduel` / `hyprduel2` ROM set (0.288
+naming) in `games/mame/`.
 
 ## Layout
 

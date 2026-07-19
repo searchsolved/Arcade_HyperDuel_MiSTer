@@ -36,4 +36,7 @@ diff/
 # fx68k microcode copies (Makefile copies them next to the sim binaries)
 sim/*.mem
 __pycache__/
-reference/hyprduel_1cc_pcb.mp4
+
+# local verification artifacts (never committed)
+reference/*.mp4
+hw_shots/
