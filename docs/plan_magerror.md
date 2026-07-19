@@ -28,27 +28,27 @@ released v1.0 state until this is CRT-verified.
    256KB 97.u97 CRC 2e62bca8. Region sizes identical to hyprduel:
    SDRAM layout unchanged.
 
-## OPLL core decision (first task)
+## OPLL core decision (DONE)
 
-Candidates: IKAOPLL (cycle-level YM2413) or jotego's jtopl-family
-2413 if one exists in usable form. Evaluate licence, Verilator
-compatibility and MiSTer track record before wiring anything; vendor
-with PATCHES.md discipline like jt51/jt6295. Removing jt51 frees
-logic/BRAM, so fit should improve, but timing gets re-closed and
-STA-gated regardless.
+IKAOPLL selected (die-shot cycle-accurate, BSD-2, pure Verilog).
+Vendored unmodified at `rtl/vendor/ikaopll/`, smoke test PASS
+(`sim/make opll-smoke`). See `rtl/vendor/PATCHES.md`.
 
 ## Order of work
 
-1. OPLL core selection + vendored, verilated standalone.
-2. System glue: address decode variant, IRQ mask, 968 Hz timer,
-   sub map. Parameterise hyprduel-vs-magerror as a build config or
-   MRA-selected mode; do NOT fork the RTL.
-3. Sim bring-up against MAME magerror as oracle (same harness:
-   dump_state, frame parity, state diffs). Needs the magerror ROM set
-   locally (MAME 0.288 naming) - blocker until supplied.
-4. Full gates: parity suite, SDRAM soak, STA, deploy, CRT verify.
-5. MRA + release: second core RBF or same RBF with MRA-driven config
-   (decide at step 2; same-RBF preferred if fit allows).
+1. DONE: OPLL core selection + vendored, verilated standalone.
+2. DONE: System glue parameterised via `GAME_MAGERROR` on
+   `hyprduel_sys` (one RTL tree, no fork). Verified through Quartus
+   17 synthesis with GAME_MAGERROR=0 (dead code eliminated cleanly).
+3. DONE: Sim bring-up against MAME magerror as oracle: boot to
+   attract in 600 frames, VDP state matches MAME at frame 510
+   (registers identical, vram1/vram2 zero diffs, vram0 0.11%).
+   All integrity gates PASS. Commit 79c4b8f.
+4. IN PROGRESS: SDRAM soak (2200 frames), Quartus compile with
+   IKAOPLL in file list, STA gate.
+5. MRA + release: second core RBF (template does not support mod
+   bytes natively; same-RBF requires adding mod byte support to
+   hps_io wiring, deferred).
 
 ## Verification bar
 
