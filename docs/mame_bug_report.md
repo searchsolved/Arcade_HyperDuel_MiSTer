@@ -1,7 +1,11 @@
-# MAME bug report (paste-ready)
+# MAME bug report
 
-Post to: https://github.com/mamedev/mame/issues/new
-Suggested labels: none (triage will assign)
+**POSTED 2026-07-19: https://github.com/mamedev/mame/issues/15732**
+
+As filed, the attachments were replaced with commit-pinned links to
+docs/evidence/refresh/ in the public repo, and the Verification
+section links the released core. The text below is the pre-posting
+draft kept for reference.
 
 ---
 
