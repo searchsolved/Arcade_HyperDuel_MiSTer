@@ -443,6 +443,8 @@ module hyprduel_sys #(
   wire m_sel_io   = (m_ba >= 24'hE00000 && m_ba < 24'hE00008);
   wire m_sel_sr2  = (m_ba >= 24'hFE0000 && m_ba < 24'hFE4000);
   wire m_sel_sr3  = (m_ba >= 24'hFE4000);
+  // magerror: shared1 goes through SDRAM instead of BRAM
+  wire m_sel_sram = m_sel_sr3 || (GAME_MAGERROR && m_sel_sr1);
 
   wire m_strobe = !m_asn && !(m_udsn && m_ldsn);
   wire [15:0] m_wmask = {{8{~m_udsn}}, {8{~m_ldsn}}};
@@ -490,7 +492,7 @@ module hyprduel_sys #(
                 o_mrom_rd   <= 1'b1;
                 o_mrom_addr <= m_ba[18:1];
                 mbst <= MB_ROM;
-              end else if (m_sel_sr3) begin
+              end else if (m_sel_sram) begin
                 sr3_m_req <= 1'b1;
                 mbst <= MB_SR3;
               end else
@@ -506,9 +508,9 @@ module hyprduel_sys #(
                   default: ;
                 endcase
               end
-              if (m_sel_sr3) begin
+              if (m_sel_sram) begin
                 sr3_m_req <= 1'b1;
-                mbst <= MB_SR3;        // sr3 writes go through SDRAM
+                mbst <= MB_SR3;        // shared RAM writes go through SDRAM
               end else
                 mbst <= MB_ACK;
             end
@@ -570,6 +572,9 @@ module hyprduel_sys #(
                     : (s_ba >= 24'hC00000 && s_ba < 24'hC08000);
   wire s_sel_sr2  = (s_ba >= 24'hFE0000 && s_ba < 24'hFE4000);
   wire s_sel_sr3  = (s_ba >= 24'hFE4000);
+  // magerror: shared1 + vector shadow go through SDRAM
+  wire s_sel_sram = (s_sel_ro3 || s_sel_sr3) ||
+                    (GAME_MAGERROR && (s_sel_vec || s_sel_sr1));
 
   wire s_strobe = !s_asn && !(s_udsn && s_ldsn);
   wire [15:0] s_wmask = {{8{~s_udsn}}, {8{~s_ldsn}}};
@@ -636,7 +641,7 @@ module hyprduel_sys #(
           sr3_s_req <= 1'b0;
           if (s_strobe && !s_iack) begin
             if (s_rw) begin
-              if (s_sel_ro3 || s_sel_sr3) begin
+              if (s_sel_sram) begin
                 if (sr3c_match) begin
                   s_rdata_q <= sr3c_rdata;
                   sbst <= SB_ACK;
@@ -647,7 +652,7 @@ module hyprduel_sys #(
               end else
                 sbst <= SB_WAIT;
             end else begin
-              if (s_sel_sr3) begin
+              if (s_sel_sram) begin
                 sr3_s_req <= 1'b1;
                 sbst <= SB_SR3;
               end else
@@ -695,36 +700,43 @@ module hyprduel_sys #(
 
   // ------------------------------------------------------------------
   // shared RAM TDP ports (port A = main, port B = sub)
-  // shared1/shared2 stay in BRAM; shared3 moved to SDRAM
+  // shared1: BRAM for hyprduel (32KB), SDRAM for magerror (128KB, via sr3 port)
+  // shared2: BRAM for both (16KB)
+  // shared3: SDRAM for both (112KB)
   // ------------------------------------------------------------------
-  localparam int SR1_AW = GAME_MAGERROR ? 16 : 14;  // 128KB vs 32KB
-  logic [SR1_AW-1:0] sr1_addr_a, sr1_addr_b;
   logic [12:0] sr2_addr_a, sr2_addr_b;
-  logic        sr1_we_a, sr1_we_b, sr2_we_a, sr2_we_b;
+  logic        sr2_we_a, sr2_we_b;
   logic [15:0] sr1_q_a, sr1_q_b, sr2_q_a, sr2_q_b;
 
   wire m_wr_commit = (mbst == MB_IDLE) && m_strobe && !m_sel_vdp
                      && !m_iack && !m_rw;
   wire s_wr_commit = (sbst == SB_IDLE) && s_strobe && !s_iack && !s_rw;
 
-  assign sr1_addr_a = m_ba[SR1_AW:1];
   assign sr2_addr_a = m_ba[13:1];
-  assign sr1_we_a = m_wr_commit && m_sel_sr1;
   assign sr2_we_a = m_wr_commit && m_sel_sr2;
-
-  assign sr1_addr_b = s_sel_vec ? SR1_AW'(s_ba[13:1]) : s_ba[SR1_AW:1];
   assign sr2_addr_b = s_ba[13:1];
-  assign sr1_we_b = s_wr_commit && (s_sel_vec || s_sel_sr1);
   assign sr2_we_b = s_wr_commit && s_sel_sr2;
 
+  generate if (!GAME_MAGERROR) begin : gen_sr1_bram
+    logic [13:0] sr1_addr_a, sr1_addr_b;
+    logic        sr1_we_a, sr1_we_b;
 
-  hd_tdpram #(.AW(SR1_AW), .DW(16)) u_shared1 (
-    .clk(clk),
-    .addr_a(sr1_addr_a), .d_a(m_dout), .we_a(sr1_we_a),
-    .be_a({~m_udsn, ~m_ldsn}), .q_a(sr1_q_a),
-    .addr_b(sr1_addr_b), .d_b(s_dout), .we_b(sr1_we_b),
-    .be_b({~s_udsn, ~s_ldsn}), .q_b(sr1_q_b)
-  );
+    assign sr1_addr_a = m_ba[14:1];
+    assign sr1_we_a = m_wr_commit && m_sel_sr1;
+    assign sr1_addr_b = s_sel_vec ? 14'(s_ba[13:1]) : s_ba[14:1];
+    assign sr1_we_b = s_wr_commit && (s_sel_vec || s_sel_sr1);
+
+    hd_tdpram #(.AW(14), .DW(16)) u_shared1 (
+      .clk(clk),
+      .addr_a(sr1_addr_a), .d_a(m_dout), .we_a(sr1_we_a),
+      .be_a({~m_udsn, ~m_ldsn}), .q_a(sr1_q_a),
+      .addr_b(sr1_addr_b), .d_b(s_dout), .we_b(sr1_we_b),
+      .be_b({~s_udsn, ~s_ldsn}), .q_b(sr1_q_b)
+    );
+  end else begin : gen_sr1_sdram
+    assign sr1_q_a = '0;
+    assign sr1_q_b = '0;
+  end endgenerate
 
   hd_tdpram #(.AW(13), .DW(16)) u_shared2 (
     .clk(clk),
@@ -746,13 +758,20 @@ module hyprduel_sys #(
   logic sr3_m_req, sr3_s_req;      // level-held by each FSM while in MB_SR3/SB_SR3
   logic sr3_grant_s;               // 0 = main granted (or idle), 1 = sub granted
 
-  // address computation (reuses the original mapping)
-  wire [16:0] sr3_m_addr = m_ba[17:1] - 17'h2000;
-  // shadow 0x4000-0x1FFFF aliases 0xFE4000-0xFFFFFF (same sr3 words):
-  // shadow byte A corresponds to main byte (A - 0x4000 + 0xFE4000),
-  // so sr3 word = s_ba[17:1] + 0xE000 for the shadow window
-  wire [16:0] sr3_s_addr = s_sel_ro3 ? (s_ba[17:1] + 17'hE000)
-                                     : (s_ba[17:1] - 17'h2000);
+  // address computation: sr3 word address within the SDRAM sr3 region.
+  // shared3 (FE4000+): word = byte[17:1] - 0x2000 -> words 0x10000..0x1DFFF
+  // shared3 RO shadow (4000-1FFFF): word = byte[17:1] + 0xE000 -> same range
+  // shared1 (C00000+, magerror): word = byte[17:1] -> words 0x00000..0x0FFFF
+  // shared1 vector shadow (0000-3FFF, magerror): same as shared1 direct
+  // The two ranges don't overlap, so both fit in the existing 17-bit port.
+  wire [16:0] sr3_m_addr = (GAME_MAGERROR && m_sel_sr1)
+                           ? m_ba[17:1]
+                           : (m_ba[17:1] - 17'h2000);
+  wire [16:0] sr3_s_addr =
+    (GAME_MAGERROR && (s_sel_vec || s_sel_sr1))
+      ? s_ba[17:1]
+      : (s_sel_ro3 ? (s_ba[17:1] + 17'hE000)
+                   : (s_ba[17:1] - 17'h2000));
 
   // grant decided while idle, held for the whole op; o_sr3_req is
   // registered so the addr/wdata/we mux is stable before the SDRAM

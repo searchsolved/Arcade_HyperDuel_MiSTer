@@ -76,8 +76,10 @@ module tb_system;
   logic [15:0] ctl_sr3_rdata;
   logic        ctl_sr3_ack;
 
-  // shared3 behavioral server (non-SDRAM path)
-  logic [15:0] shared3_mem [0:57343];
+  // shared RAM behavioral server (non-SDRAM path)
+  // Covers shared3 (words 0x10000-0x1DFFF) and, for magerror, shared1
+  // (words 0x00000-0x0FFFF) via the same sr3 port
+  logic [15:0] shared3_mem [0:122879];
   logic        sr3_p1;
   logic [15:0] sr3_rdata_ideal;
   logic        sr3_ack_ideal;
