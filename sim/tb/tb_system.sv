@@ -157,7 +157,13 @@ module tb_system;
         inp_pending = 1;
     end
   end
-  hyprduel_sys #(.GFX_AW(GFX_AW), .P_PIXDIV(PIXDIV)) dut (
+`ifdef GAME_MAGERROR
+  localparam bit LP_MAGERROR = 1;
+`else
+  localparam bit LP_MAGERROR = 0;
+`endif
+  hyprduel_sys #(.GFX_AW(GFX_AW), .P_PIXDIV(PIXDIV),
+                 .GAME_MAGERROR(LP_MAGERROR)) dut (
     .clk(clk), .rst_n(rst_n_sys),
     .o_hs(hs), .o_vs(vs), .o_de(de), .o_ce_pix(ce_pix),
     .o_hblank(), .o_vblank(),
