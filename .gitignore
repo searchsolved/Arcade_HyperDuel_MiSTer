@@ -39,4 +39,8 @@ __pycache__/
 
 # local verification artifacts (never committed)
 reference/*.mp4
+reference/*.webm
 hw_shots/
+
+# intermediate bitstreams (released ones live in releases/)
+builds/

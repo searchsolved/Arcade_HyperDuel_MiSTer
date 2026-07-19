@@ -274,6 +274,15 @@ a logic analyser on a live board or a decap:
 
 Any core for this hardware, however written, shares this list.
 
+A related observation, believed authentic rather than a core defect:
+some enemy explosion sound effects occasionally do not play. The M6295
+has four ADPCM voices; when all four are busy a new trigger is
+dropped, and the game fires many overlapping explosions. The same
+intermittent drops are audible in real-PCB gameplay footage, so we
+document the behaviour as consistent with hardware and have not
+altered it. Marked needs-review until someone counts voice slots
+against a specific dropped effect on a logic analyser.
+
 ### 3.6 Resolved: refresh rate measured at 60.24 Hz and shipped (native default, 60 Hz compat option)
 
 Nobody had measured this board's refresh; MAME's 60 Hz is flagged
@@ -301,7 +310,12 @@ independent PCB recordings, three methods that fail differently
    real mains hum at exactly 120.00 Hz and the board's line at 120.48,
    ~15 dB stronger - so the chain's frequency axis is self-verifying
    and the ~0.5 Hz beat between the two sources is audible in the
-   isolated audio.
+   isolated audio. Three quiet windows measured: both ends of the 1cc
+   recording read 120.4834 Hz identically (rate stable across the
+   22-minute session), and a SECOND PHYSICAL BOARD (different
+   uploader, venue and capture chain) reads 60.2303/120.4720 with its
+   own mains line at exactly 120.00 in the same spectrum - two
+   independent boards agreeing to ~0.01%.
 
 All three select dot totals of 424 x 261 = 60.2408 Hz at the
 photo-verified 26.6660/4 MHz dot clock. Corroboration already in this

@@ -98,6 +98,47 @@ module tb_system;
   wire [15:0] sr3_rdata_mx = (use_sdram != 0) ? ctl_sr3_rdata : sr3_rdata_ideal;
   wire        sr3_ack_mx   = (use_sdram != 0) ? ctl_sr3_ack   : sr3_ack_ideal;
 
+  // +HSLOG: hiscore snoop verification. Prints game writes to the score
+  // table region (sr3 words 0x1D951-0x1D971 = CPU 0xFFF2A2-0xFFF2E2;
+  // word = byte[17:1] - 0x2000, bit 16 SET for this region) with
+  // the EXACT qualifying condition the Hyprduel.sv shadow snoop uses
+  // (req && we && ack && in-range), plus a loose count (req && we &&
+  // in-range, any cycle) to expose ack-timing misses.
+  bit hslog_en;
+  initial hslog_en = $test$plusargs("HSLOG") != 0;
+  int hs_exact, hs_loose_edges, hs_all_wr, hs_hshk_wr;
+  logic hs_loose_d;
+  always_ff @(posedge clk) begin
+    if (hslog_en) begin
+      if (sr3_req && sr3_we && sr3_ack_mx) begin
+        hs_all_wr <= hs_all_wr + 1;
+        if (sr3_addr == 17'h1D9A6) hs_hshk_wr <= hs_hshk_wr + 1;
+      end
+      if (sr3_req && sr3_we && sr3_addr >= 17'h1D951 && sr3_addr <= 17'h1D971) begin
+        if (sr3_ack_mx) begin
+          hs_exact <= hs_exact + 1;
+          if (hs_exact < 80)
+            $display("HSW f=%0d w=%05x data=%04x be=%b (cpu %06x)",
+                     frames_seen, sr3_addr, sr3_wdata, sr3_be,
+                     24'hFC0000 + 24'(({1'b0, sr3_addr} + 18'h2000) << 1));
+        end
+        if (!hs_loose_d) hs_loose_edges <= hs_loose_edges + 1;
+      end
+      hs_loose_d <= sr3_req && sr3_we &&
+                    sr3_addr >= 17'h1D951 && sr3_addr <= 17'h1D971;
+    end
+  end
+  final if (hslog_en)
+    $display("HSLOG summary: ack_qualified=%0d loose_write_edges=%0d all_sr3_writes=%0d hshk_writes=%0d",
+             hs_exact, hs_loose_edges, hs_all_wr, hs_hshk_wr);
+  // +SR3DUMP=<path>: write the ideal-mode shared3 memory image at the
+  // end of the run (score-table hunting; ideal mode only)
+  final begin
+    string s3path;
+    if ($value$plusargs("SR3DUMP=%s", s3path))
+      $writememh(s3path, shared3_mem);
+  end
+
   // scripted inputs: +INPUTS=<file>, lines of "<frame> <p1p2hex> <systemhex>"
   // (active-low, applied at that frame and held until the next line)
   logic [15:0] inp_p1p2   = 16'hFFFF;

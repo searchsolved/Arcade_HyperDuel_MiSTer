@@ -258,8 +258,15 @@ assign BUTTONS = 0;
   );
   // ------------------------------------------------------------------
   // High score save/restore (MAME hiscore.dat via Hiscores_MiSTer).
-  // Table = sharedram3 bytes 0xFFF2A2-0xFFF2DD (0x3C) + flag 0xFFF2E2
-  // = sr3 words 0xD951-0xD971. A 64-word shadow snoops every CPU write
+  // Table = sharedram3 bytes 0xFFF2A2-0xFFF2DD (0x3C) + flag 0xFFF2E2.
+  // sr3 word addressing (see the dbg_hshk formula below, the one place
+  // that always had it right): word = (byte[17:1]) - 0x2000, so this
+  // region sits at words 0x1D951-0x1D971 - bit 16 SET. The original
+  // glue derived (byte - 0xFE4000) >> 1 = 0x0D951, dropping bit 16;
+  // the snoop matched nothing, the shadow stayed empty, and no save
+  // ever fired (found 2026-07-19 via sim write-probes with the
+  // known-written handshake word as the control).
+  // A 64-word shadow snoops every CPU write
   // on the already-muxed sr3 port (both 68000s funnel through it), so
   // hiscore reads are single-cycle BRAM reads; hiscore restore writes
   // update the shadow and flush one byte at a time to SDRAM through a
@@ -268,8 +275,8 @@ assign BUTTONS = 0;
   // always drains). The sub-CPU sr3 read cache is not invalidated by
   // restore writes, but only the main CPU touches the score table.
   // ------------------------------------------------------------------
-  localparam [16:0] HSW0 = 17'h0D951;
-  localparam [16:0] HSW1 = 17'h0D971;
+  localparam [16:0] HSW0 = 17'h1D951;
+  localparam [16:0] HSW1 = 17'h1D971;
 
   wire [23:0] hs_ram_addr;
   wire  [7:0] hs_dout;
@@ -292,7 +299,7 @@ assign BUTTONS = 0;
   );
 
   reg  [15:0] hs_shadow [0:63];
-  wire [16:0] hs_word = 17'((hs_ram_addr - 24'hFE4000) >> 1);
+  wire [16:0] hs_word = 17'(((hs_ram_addr & 24'h3FFFF) >> 1) - 24'h2000);
   wire [5:0]  hs_sidx = 6'(hs_word - HSW0);
   wire [1:0]  hs_wbe  = hs_ram_addr[0] ? 2'b01 : 2'b10;
   reg   [7:0] hs_din_q;
