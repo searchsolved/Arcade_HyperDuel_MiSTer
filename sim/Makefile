@@ -163,3 +163,15 @@ download: $(BUILD)/obj_dl/Vtb_download
 
 clean:
 	rm -rf $(BUILD)
+
+# magerror branch: IKAOPLL (YM2413) standalone smoke at the
+# integration shape (80 MHz clk + fractional 3.579545 MHz cen)
+$(BUILD)/obj_opll/Vtb_opll_smoke: tb/tb_opll_smoke.sv ../rtl/vendor/ikaopll/IKAOPLL.v
+	$(VERILATOR) --binary --timing -Wno-UNUSEDSIGNAL -Wno-WIDTHEXPAND \
+		-Wno-WIDTHTRUNC --timescale 1ns/1ps --Mdir $(BUILD)/obj_opll \
+		../rtl/vendor/ikaopll/IKAOPLL.v ../rtl/vendor/ikaopll/IKAOPLL_modules/*.v \
+		tb/tb_opll_smoke.sv --top-module tb_opll_smoke
+
+.PHONY: opll-smoke
+opll-smoke: $(BUILD)/obj_opll/Vtb_opll_smoke
+	$(BUILD)/obj_opll/Vtb_opll_smoke | grep OPLL
