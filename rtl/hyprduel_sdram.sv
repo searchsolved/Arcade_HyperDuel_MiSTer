@@ -439,17 +439,25 @@ module hyprduel_sdram #(
             cur_word <= SR3_WBASE + 24'(sr3_addr_q);
             words_left <= 7'd1;
             st <= ST_ACT;
+          end else if (mrom_pend) begin
+            // v13 (2026-07-18): main-CPU ROM outranks GFX bursts. With
+            // GFX first, every collision stalled the 68000 for a full
+            // burst (up to ~70 cycles); in the heaviest scenes that
+            // starvation ran the game's raster IRQ handler late enough
+            // to push scroll writes past their line (the boss-split
+            // artefact). A mrom grant is one word, so GFX loses almost
+            // nothing, and the renderer holds 2.5x line budget at the
+            // 3-line display lag.
+            owner <= OWN_MROM;
+            cur_word <= MROM_WBASE + 24'(mrom_addr_q);
+            words_left <= 7'd1;
+            st <= ST_ACT;
           end else if (gfx_pend) begin
             owner <= OWN_GFX;
             cur_word <= GFX_WBASE + 24'(gfx_addr_q[21:1]);
             // ceil((start_is_odd + len) / 2) words cover the byte span
             words_left <= 7'((8'(gfx_addr_q[0]) + 8'(gfx_len_q) + 8'd1) >> 1);
             gfx_start <= 1'b1;
-            st <= ST_ACT;
-          end else if (mrom_pend) begin
-            owner <= OWN_MROM;
-            cur_word <= MROM_WBASE + 24'(mrom_addr_q);
-            words_left <= 7'd1;
             st <= ST_ACT;
           end else if (oki_pend) begin
             owner <= OWN_OKI;

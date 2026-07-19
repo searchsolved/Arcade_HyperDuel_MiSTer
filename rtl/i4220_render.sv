@@ -84,10 +84,37 @@ module i4220_render #(
     // line buffer write (final pen per pixel)
     output logic        o_lb_we,
     output logic [8:0]  o_lb_x,
-    output logic [11:0] o_lb_pen
+    output logic [11:0] o_lb_pen,
+
+    // DEBUG: the layer-2 X view (scroll-window) actually consumed by
+    // this line's tilemap pass, latched on the first pass cycle.
+    // Lines 0-2 only (top-lines provenance investigation).
+    output logic [15:0] o_dbg_used_sx2_0,
+    output logic [15:0] o_dbg_used_sx2_1,
+    output logic [15:0] o_dbg_used_sx2_2
 );
 
   localparam int WIDTH = 320;
+
+  // DEBUG: latch i_sw_x[2] on the first tilemap-pass cycle of each line
+  // (layer starts at 2, so the first ST_L_PIX cycle is the layer-2 pass;
+  // the pass consumes i_sw live, this records what it started with)
+  logic dbg_sx_taken;
+  always_ff @(posedge clk) begin
+    if (!rst_n)
+      dbg_sx_taken <= 1'b1;
+    else if (i_start)
+      dbg_sx_taken <= 1'b0;
+    else if (st == ST_L_PIX && !dbg_sx_taken) begin
+      dbg_sx_taken <= 1'b1;
+      if (line_r < 8'd3)
+        case (line_r[1:0])
+          2'd0: o_dbg_used_sx2_0 <= i_sw_x[2];
+          2'd1: o_dbg_used_sx2_1 <= i_sw_x[2];
+          default: o_dbg_used_sx2_2 <= i_sw_x[2];
+        endcase
+    end
+  end
 
   // sprite zoom table (spec sec 7.1)
   logic [11:0] ztab [0:63];

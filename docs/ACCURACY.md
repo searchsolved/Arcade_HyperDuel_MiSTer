@@ -102,49 +102,112 @@ NOT calibrate write timing against MAME here, deliberately.
 - YM level keeps the MAME stream calibration (x1.20); YM clocking is
   crystal-verified.
 
-### 3.3 In progress: top-of-frame raster phase (lines 0-3), fix v1 has a heavy-scene regression
+### 3.3 Resolved (v12.2 + v14, 2026-07-19): top-of-frame and raster-split scroll staleness
 
-Write-log analysis (2026-07-11/12) established exactly what the game
-does: during scenes with a per-line vertical scroll ramp on layers 0
-and 2 (regs sy0/sy2), it writes line N's ramp values during line N-1
-at h~70-100, keeps the ramp running through every vblank line, and
-parks the frame-start values at (vpos 261, h~75). A renderer that
-fetches each line's registers at h=0 of the previous line therefore
-samples lines 0 and 2 one ramp-phase early (measured staleness: 14-17
-lines of Y for line 0, ~11 for line 2), which showed on a CRT as a few
-rows of displaced cloud pixels at the top of stages 2 and 6. The real
-chip never shows this because it fetches just-in-time; a fetch that
-happens after h~100 of the previous line always sees fresh values.
+The full mechanism, established over 2026-07-11..18 by write-schedule
+logging in sim, pixel-exact analysis of MAME output, attract-mode PCB
+footage, and on-silicon register telemetry (probe overlay builds read
+back through the MiSTer's own screenshot facility, machine-decoded
+against the overlay font):
 
-Fix v1 (2026-07-12): the render kick for lines 0 and 2 only moves
-from h=0 to h=120 of the previous line, after the game's writes have
-landed. This reproduces the just-in-time property the write schedule
-proves the real chip relies on, and measured staleness deltas drop to
-0 on every top line (all within 1 px) with zero over-budget lines and
-zero mid-scanout completions over a 2,500-frame light-content soak.
-HOWEVER a 5,200-frame soak through the heavy stage-2 attract window
-found 1,357 mid-scanout completions on the late-kicked lines: their
-reduced 3,648-cycle lead is not always enough there, and a completion
-at hcnt >= 28 means the beam has already displayed stale line-buffer
-content on the left edge (the resolve pass is the final 320-clock
-left-to-right writer). Fix v1 is therefore NOT shipped as-is;
-characterisation of the offending frames (completion-hcnt
-distribution, whether the scroll values actually changed that frame)
-is running to choose between a conditional late kick (only when the
-ramp effect is live) and renderer throughput work that makes the
-3,648-cycle lead always sufficient.
+**What the game does.** Across vblank the scroll registers hold a
+scratch accumulator that advances every frame without bound (measured
++7-12 px/frame in the cloud scenes; it is NOT a display value). The
+per-line raster program then writes each line's true value just in
+time - line N's value during line N-1 (h~20-100 in sim) - and a
+once-per-frame block lands around line 0-1. In the stage-2 boss
+transition (the "grey blobs" scene) the program jumps sy2 by up to
+~190 px between adjacent lines.
 
-Known residual, plausibly authentic: the layer X seeds for line 0 are
-written DURING line 0 (h256-400), so lines 0-1 render with X scroll
-~2 px stale and line 3 is within +-1 px. The real chip cannot have had
-those values for those lines' left edges either unless its internal
-fetch lead behaves in undocumented ways; the 1cc captures cannot
-adjudicate (the HUD covers those lines in gameplay and neither video
-shows attract). Resolution needs attract-mode PCB footage or a logic
-analyser.
+**Why the real PCB is clean and MAME is not.** The real chip consumes
+registers per-pixel at beam time, and a PCB's zero-wait mask ROMs run
+the interrupt handlers on schedule, so every just-in-time write lands
+before the pixels that need it. Any line-granularity renderer that
+samples a line's registers before its write has landed paints the
+scratch value (top lines) or the neighbouring split value (boss
+scene). MAME 0.288 exhibits exactly this: its cloud-scene top lines
+scroll at 3 and 12 px/frame while the sky beneath moves at 1
+(pixel-exact frame differencing, mse=0 matches), and note 3.1's
+measured ~14% dropped per-line interrupts push the game's writes off
+schedule in the same direction. PCB attract footage shows none of it.
+A MAME bug report with these measurements is planned.
 
-Related finding: the game also writes a line-indexed value to the CRTC
-horizontal register on EVERY line, always (655k writes per attract
+**Why this core showed it, measured.** Our 68000 pays SDRAM wait
+states a PCB never did, so under load the handler writes land later
+relative to the beam than any simulation predicts. A hardware
+sampling-ladder build measured the frame-top landing at (line 1,
+h<=160) on silicon - a full line later than the SDRAM-model sim -
+and the boss-section slips follow the same load-dependent lateness
+(the artifact appears at the sprite-heaviest moment of the attract).
+
+**The shipped architecture (v12.2).** Scan-out runs three lines
+behind the game timeline (190 us, invisible; game-facing timing is
+untouched). Each line's render consumes a register snapshot carried
+in the kick FIFO: lines 2+ snapshot at their own line's h170, lines
+0-1 at (1,h200)/(1,h208) - after the measured landing. The h170
+sampling point buys ~1.2 lines of tolerance for late writes at zero
+extra render load. (v12.1 instead re-kicked a line when a write
+landed just after its snapshot; on silicon the re-renders doubled
+renderer load exactly at the sprite-heaviest frames and caused
+visible tearing - a failure the SDRAM-model sim cannot reproduce
+because its write timing does not slide. Reverted same night.) No
+detectors, predictors, or scene-specific machinery; the v6-v8
+mitigation stack is deleted. This fully fixes the top-of-frame
+artifact (cloud scenes verified clean on CRT).
+
+**The stage-2 boss transition (v14).** A few wrong lines persisted
+from just after the "grey blobs" effect to the end of that attract
+scene, surviving both v12.2 (h170 sampling) and a v13 experiment
+granting the 68000 absolute SDRAM priority - so not bus starvation.
+A hardware histogram probe (overlay rows counting sy2 write landings
+per hcnt band per frame, decoded from screenshot bursts) then showed
+silicon writes are ON SCHEDULE: one sy write per line, >=98.8%
+landing at h0-99, none ever past h170, totals equal to the sim's -
+which killed every lateness theory and proved the residual
+deterministic. Write-schedule modelling located it: the game runs
+TWO write disciplines. sy0/sy2 are per-line ladder registers
+(rewritten every line at h34-76, punctual even on silicon); sx0/
+sx1/sx2/sy1 arrive once per frame during line 0 (h185-270, landing
+as late as (1,h160) on silicon). Sampling lines 0/1 wholly at
+(1,h200/208) - required for the late block - handed line 0 the sy
+ladder write intended for line 1. Harmless on a smooth ramp, but in
+the boss tail the game parks a per-frame outlier at (1,h~44) that
+jumps up to 191 px (frames 1841-2163, every frame for ~5 s), so
+line 0 painted the boss zone a full line early. (The vblank
+"accumulator march" in this scene is not scratch: the game ramps sy
+through vblank so it arrives at the correct top-of-screen parallax
+value by line 0 - which is exactly why the real PCB is clean.) v14
+fix: sy0/sy2 for every line come from that line's own (N,h170) view
+(stashed at (0,h170)/(1,h170) for the two early kicks); only the
+block class keeps the (1,h200/208) view. Proof: a dedicated
+tb ladder-snapshot gate (0 mismatches, 515k renders), and on the
+shared artifact frame the fix changes row 0 alone (252/320 pixels)
+with rows 1-223 pixel-identical - surgical scope by construction.
+
+**Deliberate deviations that remain.** (a) Three scanlines of output
+latency. (b) Line granularity: a write landing mid-way across its own
+line's visible pixels splits on the PCB and cannot split here; in
+this game that is confined to parts of single lines in light scenes,
+a 1-2 px difference. (c) Lines 0-1 take sx0/sx1/sx2/sy1 from the (1,h200/208) view -
+after the once-per-frame block that lands as late as (1,h160) on
+silicon - so their X scroll can lead the real beam's value by up to
+a line; their sy0/sy2 come from each line's own h170 view (v14) and
+match the beam-dominant value. (d) Every line samples at h170 of its
+own line rather than the beam-time per-pixel consumption of the real
+chip, so a mid-line write splits on the PCB but moves our whole
+line; in this game that is the left ~34-56 px of the lines adjacent
+to a raster discontinuity.
+
+**Verification.** Per-render snapshot-integrity gate (consumed value
+must equal the tb's own record of the sampling instant; 1.4M renders,
+0 mismatches), in-flight exposure gate, stale-bank counters, full
+oracle/blitter/MAME-frame parity, SDRAM-model soaks run with the
+hardware's DIP configuration, on-silicon register telemetry, and
+scripted hardware screenshot bursts of the artifact scenes compared
+against the PCB footage - plus the CRT.
+
+Related finding, unchanged: the game writes a line-indexed value to
+the CRTC horizontal register on EVERY line (655k writes per attract
 cycle) - a long-standing MAME mystery ("many CRTC writes" TODO). Both
 MAME and this core ignore the register; the footage shows real
 hardware has no visible geometric response to it either.

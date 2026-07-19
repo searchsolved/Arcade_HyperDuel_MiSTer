@@ -2,7 +2,7 @@
 # Waits for the MiSTer to come online, then deploys the staged RBF safely:
 # menu core first (CRT protect), scp, md5 verify both sides, load MRA.
 set -u
-RBF=/Users/leefoot/python_scripts/hyperduel-mister/builds/Hyprduel_v2g768.rbf
+RBF=/Users/leefoot/python_scripts/hyperduel-mister/builds/Hyprduel_v9.rbf
 MISTER=root@192.168.1.208
 # MiSTer uses password auth (root/1): everything goes through sshpass
 SSH="sshpass -p 1 ssh -o StrictHostKeyChecking=no -o PubkeyAuthentication=no"

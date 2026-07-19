@@ -78,11 +78,13 @@ module i4220_vdp #(
     output logic [15:0] o_dbg_ovr,   // count of dropped render kicks (overrun)
 
     // DEBUG: top-lines provenance (displaced-strip investigation).
-    // rend = layer-2 X view (scroll-window) latched when the line's
-    // render was kicked; disp = the same view at the line's own scanout
-    // (h160). A nonzero rend/disp delta is the expected on-screen
-    // displacement of that line in pixels. topflags = previous frame's
-    // {stale[2:0], tagbad[2:0]} for lines 2..0.
+    // rend = layer-2 X view (scroll-window) the renderer's tilemap pass
+    // ACTUALLY CONSUMED for the line (tapped inside i4220_render on the
+    // first pass cycle, so it reflects the line-1 prediction mux);
+    // disp = the same view at the line's own scanout (h160). A nonzero
+    // rend/disp delta is the expected on-screen displacement of that
+    // line in pixels. topflags = previous frame's {stale[2:0],
+    // tagbad[2:0]} for lines 2..0.
     output logic [15:0] o_dbg_rend_sx2_0,
     output logic [15:0] o_dbg_rend_sx2_1,
     output logic [15:0] o_dbg_rend_sx2_2,
@@ -209,7 +211,7 @@ module i4220_vdp #(
     .clk(clk),
     .addr_a({lb_bank, lb_x}), .d_a({4'd0, lb_pen}), .we_a(lb_we),
     .be_a(2'b11), .q_a(),
-    .addr_b({vcnt[1:0], hcnt[8:0]}), .q_b(lb_rq_wide)
+    .addr_b({vdisp[1:0], hcnt[8:0]}), .q_b(lb_rq_wide)
   );
 
   // ------------------------------------------------------------------
@@ -238,26 +240,23 @@ module i4220_vdp #(
   // registers and the renderer's resx/resy adders and breaks timing on
   // the layer->lay_waddr cone (measured -0.19 to -0.32 across four
   // fitter seeds, 2026-07-15, with a predictor mux there). The
-  // renderer first consumes scroll two cycles after a kick is accepted
-  // (ST_IDLE -> ST_L_PIX), so nothing observes the one-clock lag.
-  //
-  // LINE 1 frame-global prediction (measured, 2026-07-15 evening):
-  // the game writes the once-per-frame block (sx0/sy1/sx1/sx2) at
-  // h180-320 of line 0. The real chip's line 1 therefore renders
-  // fully FRESH, but our line-1 kick can never wait that long: ramp
-  // line 1 costs up to 2,809 clks and only 1,296 remain after h344.
-  // So line 1 renders with pred = cur + (cur - prev) for those four
-  // registers, latched at the line-0 kick (offline replay on the ramp
-  // capture: sx0 1718/1722 exact, sx2 539 exact + 296 within 1-2 px,
-  // vs a constant 7 px/frame stale error). Line 0 stays stale: the
-  // real chip's line 0 also scans out before those writes land.
-  // Structure kept off the critical cone: mux at the REGISTER INPUT
-  // with a registered select (the +0.151 closure structure).
+  // renderer consumes rnd_sw_* (registers loaded from the kick-FIFO
+  // snapshot at pop), so the adder cone sees a plain register - no
+  // added mux depth. Timing history that matters here: the game's
+  // once-per-frame scroll block (sx0/sy1/sx1/sx2) lands at h180-320 of
+  // line 0, and the per-line raster values land at h36-100 of the line
+  // before the one they affect; the v9 own-line h0 kick samples after
+  // both, which is what the deleted prediction/latch machinery was
+  // approximating.
   logic [15:0] rs_sw_x [3];
   logic [15:0] rs_sw_y [3];
-  logic [15:0] prev_fg [6];    // pre-write shadow of each scroll reg
-  logic [15:0] pred_sw [6];    // predicted (scroll - window), idx 1,2,3,5
-  logic        rnd_line1;      // renderer is on display line 1
+  // v9 (2026-07-17, after PCB footage disproved every line-ahead
+  // mitigation): rs_sw_* is the LIVE registered view; each line's
+  // render consumes a SNAPSHOT of it taken at h0 of that line (see the
+  // kick FIFO below), and scan-out displays each line one line later.
+  // Every line therefore renders from exactly the register state the
+  // real chip's beam would have seen at its line start - no detectors,
+  // predictors or latches.
   always_ff @(posedge clk) begin
     for (int l = 0; l < 3; l++) begin
       // pre-registered (scroll - window): keeps the renderer's per-pixel
@@ -265,12 +264,6 @@ module i4220_vdp #(
       // which is all the <=12-bit window masks ever consume)
       rs_sw_y[l] <= r_scroll[l*2 + 0] - r_window[l*2 + 0];
       rs_sw_x[l] <= r_scroll[l*2 + 1] - r_window[l*2 + 1];
-    end
-    if (rnd_line1) begin
-      rs_sw_x[0] <= pred_sw[1];
-      rs_sw_y[1] <= pred_sw[2];
-      rs_sw_x[1] <= pred_sw[3];
-      rs_sw_x[2] <= pred_sw[5];
     end
   end
   always_comb begin
@@ -316,38 +309,19 @@ module i4220_vdp #(
   wire line_start   = ce_pix && (32'(hcnt) == H_TOTAL - 1);
   wire [8:0] next_v = (vcnt == vlast) ? 9'd0 : vcnt + 9'd1;
 
-  // Conditional late-kick predictor for lines 0 and 2 (see the kick
-  // comment below). lk_hit[i] latches a CPU write to sy0 (0x78870) or
-  // sy2 (0x78878) landing in the kick line's h<120 window; at h120 it
-  // hands off to lk_pred[i], which steers NEXT frame's kick point.
-  // Ramp scenes write every frame, so the predictor is wrong only for
-  // the single frame at a ramp's start or end.
-  wire sy_ramp_wr = reg_w && ((i_addr & 19'h7FFFE) == 19'h78870 ||
-                              (i_addr & 19'h7FFFE) == 19'h78878);
-  // Frame-wide ramp detector (v3, measured 2026-07-15): the game's
-  // raster program rewrites sy0/sy2 during EVERY line's h36-76 slot,
-  // so a kick at h0 samples one line early for ALL lines, not just
-  // 0/2. In smooth ramp sections that is a uniform 1px phase shift,
-  // but at raster SPLITS (the stage-2 boss program jumps sy2 by up to
-  // 190px between adjacent lines) the early sample paints a full line
-  // from the wrong part of the tilemap. When >= 8 in-window sy writes
-  // were seen last frame, every line kicks at h88 (99.8% of the game's
-  // per-line writes land by h76); one-frame lag at ramp start/stop.
-  //
-  // ADAPTIVE BACKOFF (2026-07-15, after on-CRT black tearing in real
-  // stage-2 gameplay): late kicks cost 27% of the render lead, and
-  // real play is heavier than any attract soak. A completion on the
-  // line's own display row (the tearing precursor) arms a ~4 s
-  // cooldown that reverts every kick to h0 - a brief return of the
-  // subtle 1-line scroll seam, never visible tearing.
-  logic [7:0] lk_wrcnt;       // in-window sy writes this frame
-  logic       lk_ramp;        // >=8 last frame -> late-kick all lines
-  logic [7:0] lk_cool;        // frames left with late kicks suppressed
-  logic [1:0] lk_pred, lk_hit;
-  wire lk_late = (lk_cool == 8'd0) &&
-                 (lk_ramp ||
-                  (next_v == 9'd0 && lk_pred[0]) ||
-                  (next_v == 9'd2 && lk_pred[1]));
+  // v12 display line: scan-out runs THREE lines behind the game
+  // timeline (190us, invisible). Measured on silicon (ladder probe,
+  // 2026-07-18): the game parks a scratch accumulator in the scroll
+  // registers across vblank and its frame-top write flurry lands
+  // during line 1, by (1,h160) - later than any simulation shows,
+  // because the SDRAM-fed 68000 runs the flurry slower than a PCB's
+  // zero-wait ROMs (MAME's CPU timing is late the same way, which is
+  // why it shows the same top-line artefact). Lines 0/1 therefore
+  // sample at (1,h200), past the measured landing; lines 2+ sample at
+  // their own h0 (verified clean on silicon). The 3-line lag funds
+  // all of it with room to spare. Output sync generation uses vdisp
+  // throughout; game-facing timing (vcnt, IRQs) is unchanged.
+  wire [8:0] vdisp = (vcnt >= 9'd3) ? vcnt - 9'd3 : vcnt + vlast - 9'd2;
 
   // ------------------------------------------------------------------
   // IRQ cause events
@@ -398,6 +372,11 @@ module i4220_vdp #(
   // ------------------------------------------------------------------
   logic        rnd_start;
   logic [7:0]  rnd_line;
+  // scroll-window snapshot consumed by the current render (loaded from
+  // the kick FIFO at pop; stable for the whole line even if the render
+  // starts late under backlog or the CPU writes scroll mid-render)
+  logic [15:0] rnd_sw_x [3];
+  logic [15:0] rnd_sw_y [3];
   logic        rnd_busy, rnd_done;
   logic [15:0] rnd_vram_addr;
   logic [15:0] rnd_vram_q [3];
@@ -425,7 +404,7 @@ module i4220_vdp #(
     .i_bg_color(r_bg),
     .i_screen_ctrl(r_ctrl),
     .i_window_x(rs_window_x), .i_window_y(rs_window_y),
-    .i_sw_x(rs_sw_x), .i_sw_y(rs_sw_y),
+    .i_sw_x(rnd_sw_x), .i_sw_y(rnd_sw_y),
     .i_spr_count(r_spr_count), .i_spr_pri(r_spr_pri),
     .i_spr_xoff(r_spr_xoff), .i_spr_yoff(r_spr_yoff),
     .i_spr_color(r_spr_color),
@@ -436,23 +415,65 @@ module i4220_vdp #(
     .o_spr_addr(rnd_spr_addr), .i_spr_data(rnd_spr_q),
     .o_rom_req(rnd_rom_req), .o_rom_addr(rnd_rom_addr), .o_rom_len(rnd_rom_len),
     .i_rom_data(i_rom_data), .i_rom_valid(rnd_rom_valid),
-    .o_lb_we(lb_we), .o_lb_x(lb_x), .o_lb_pen(lb_pen)
+    .o_lb_we(lb_we), .o_lb_x(lb_x), .o_lb_pen(lb_pen),
+    .o_dbg_used_sx2_0(o_dbg_rend_sx2_0),
+    .o_dbg_used_sx2_1(o_dbg_rend_sx2_1),
+    .o_dbg_used_sx2_2(o_dbg_rend_sx2_2)
   );
 
-  // kick renderer at hblank start for the next visible line
-  // Elastic kick with a 4-deep FIFO and 4 line-buffer banks: bursts of
-  // slow (sprite-dense) lines borrow time from cheap neighbours and the
-  // vblank gap, up to 3 lines of lookahead. Banks are line[1:0], display
-  // reads bank vcnt[1:0], so lookahead <= 3 never collides.
+  // v9 kick: line N is queued at h0 of game line N with a SNAPSHOT of
+  // the scroll-window registers taken at that instant. Every CPU write
+  // made through the end of line N-1 - including the game's per-line
+  // raster slot at h36-100 of N-1 and the vblank parks - is in the
+  // snapshot; nothing later can leak in (the renderer consumes the
+  // snapshot, not the live registers). The beam displays line N during
+  // game line N+1 (vdisp above), so the render lead is a full line
+  // (5088 cycles), the same margin as the soak-proven h0 kick of the
+  // line-ahead era. Elastic kick with a 4-deep FIFO and 4 line-buffer
+  // banks: bursts of slow (sprite-dense) lines borrow time from cheap
+  // neighbours and the vblank gap. Banks are line[1:0], display reads
+  // bank vdisp[1:0].
   // Frame parity rides through the kick FIFO so completed lines can be
   // tagged with the frame they belong to (scan-out blanking below).
-  // Toggled one line BEFORE line 0's kick is queued so the queue write
-  // at vcnt==V_TOTAL-1 sees the settled new value.
+  // Toggled at vlast-1, two lines before line 0's kick is queued.
   logic       frame_par;
   logic       cur_par;       // parity of the line currently rendering
-  logic [9:0] kick_fifo [0:3];   // {par, line[8:0]}
-  logic [1:0] kf_wr, kf_rd;
-  logic [2:0] kf_cnt;
+  // Snapshot rides INSIDE the FIFO word: {par, line[8:0], y2,x2,y1,x1,y0,x0}.
+  // v9 used separate 2-D unpacked arrays (kick_sw_x[0:3][3]) and Quartus
+  // 17.0 mis-synthesized them - hardware delivered another register's
+  // value to the line-0/1 renders (measured via the overlay telemetry,
+  // 2026-07-18) while Verilator matched the RTL. A 1-D array of one
+  // packed word is the same construct the FIFO itself already proves.
+  logic [105:0] kick_fifo [0:7];
+  logic [105:0] pop_word;        // two-stage pop staging (see pop below)
+  logic         pop_pend;
+  logic [2:0] kf_wr, kf_rd;
+  logic [3:0] kf_cnt;
+  // v12.2: no re-kick (v12.1's re-render doubled renderer load exactly
+  // in the heaviest frames on silicon - the late writes cluster where
+  // load peaks - and caused tearing). Instead every line samples ONCE,
+  // late in its own line (h170), past the measured slip window. On
+  // schedule that consumes the just-in-time value written during the
+  // line itself (the PCB shows that value for most of the line's
+  // pixels anyway); under load it still catches writes up to ~1.4
+  // lines late. Single render per line - same load as v12.
+  //
+  // v14: the game runs TWO write disciplines (measured in sim and
+  // with the silicon write-landing histogram, 2026-07-19). sy0/sy2
+  // are per-line ladder registers, rewritten every line at h34-76 and
+  // on schedule even on silicon; sx0/sx1/sx2/sy1 arrive in a
+  // once-per-frame block during line 0 (h185-270 in sim, landing as
+  // late as (1,h160) on silicon). Sampling lines 0/1 wholly at
+  // (1,h200/208) catches the late block (the v12 clouds fix) but
+  // hands line 0 the sy ladder write meant for line 1 - harmless on a
+  // smooth ramp (<=2px), but the stage-2 boss tail writes a per-frame
+  // sy outlier at (1,h~44) jumping up to 191px, so line 0 painted the
+  // boss zone a full line early for the last ~5s of the scene. Fix:
+  // sy0/sy2 for EVERY line come from that line's own h170 view
+  // (stashed at (0,h170)/(1,h170) for the two early kicks); only the
+  // block class keeps the (1,h200/208) view on lines 0/1.
+  logic [15:0] lad_y0_l0, lad_y2_l0;   // sy0/sy2 view at (0,h170)
+  logic [15:0] lad_y0_l1, lad_y2_l1;   // sy0/sy2 view at (1,h170)
   always_ff @(posedge clk) begin
     logic kf_push, kf_pop;
     kf_push = 1'b0; kf_pop = 1'b0;
@@ -463,85 +484,78 @@ module i4220_vdp #(
       kf_wr <= '0;
       kf_rd <= '0;
       kf_cnt <= '0;
+      pop_pend <= 1'b0;
       frame_par <= 1'b0;
-      lk_pred <= '0;
-      lk_hit  <= '0;
-      lk_wrcnt <= '0;
-      lk_ramp  <= 1'b0;
-      lk_cool  <= '0;
-      rnd_line1 <= 1'b0;
-      for (int i = 0; i < 6; i++) pred_sw[i] <= '0;
     end else begin
       rnd_start <= 1'b0;
       if (ce_pix && hcnt == 9'd0 && vcnt == vlast - 9'd1)
         frame_par <= ~frame_par;
-      // late-kick predictor bookkeeping (window matches the h88 kick)
-      if (sy_ramp_wr && hcnt < 9'd88) begin
-        if (vcnt == vlast) lk_hit[0] <= 1'b1;
-        if (vcnt == 9'd1)             lk_hit[1] <= 1'b1;
-        if (lk_wrcnt != 8'hFF) lk_wrcnt <= lk_wrcnt + 8'd1;
+      // queue lines 2..223 at their own h170 (past the measured write
+      // slip); lines 0 and 1 queue at (1,h200)/(1,h208), after the
+      // measured frame-top landing
+      // v14 ladder-class stash: sy0/sy2 as each top line's own beam
+      // would have seen them (their writes land h34-76, always on time)
+      if (ce_pix && hcnt == 9'd170 && vcnt == 9'd0) begin
+        lad_y0_l0 <= rs_sw_y[0];
+        lad_y2_l0 <= rs_sw_y[2];
       end
-      // frame boundary: hand the write count to the frame-wide detector
-      // and run down the tearing-backoff cooldown
-      if (ce_pix && hcnt == 9'd0 && vcnt == vlast) begin
-        lk_ramp  <= (lk_wrcnt >= 8'd8);
-        lk_wrcnt <= '0;
-        if (lk_cool != 8'd0) lk_cool <= lk_cool - 8'd1;
+      if (ce_pix && hcnt == 9'd170 && vcnt == 9'd1) begin
+        lad_y0_l1 <= rs_sw_y[0];
+        lad_y2_l1 <= rs_sw_y[2];
       end
-      // tearing precursor: the renderer finished a line while the beam
-      // was already inside that line's display row - late kicks are too
-      // expensive for the current scene load, revert to h0 for ~4 s
-      if (rnd_done && vcnt == {1'b0, rnd_line} && hcnt > 9'd8)
-        lk_cool <= 8'd255;
-      if (ce_pix && hcnt == 9'd88) begin
-        if (vcnt == vlast) begin
-          lk_pred[0] <= lk_hit[0];
-          lk_hit[0]  <= 1'b0;
+      begin
+        logic       do_push;
+        logic [8:0] push_line;
+        logic [15:0] push_y0, push_y2;
+        do_push = 1'b0; push_line = vcnt;
+        push_y0 = rs_sw_y[0]; push_y2 = rs_sw_y[2];
+        if (ce_pix) begin
+          if (hcnt == 9'd170 && 32'(vcnt) >= 2 && 32'(vcnt) < V_VIS)
+            do_push = 1'b1;
+          if (vcnt == 9'd1) begin
+            if (hcnt == 9'd200) begin
+              do_push = 1'b1; push_line = 9'd0;
+              push_y0 = lad_y0_l0; push_y2 = lad_y2_l0;
+            end
+            if (hcnt == 9'd208) begin
+              do_push = 1'b1; push_line = 9'd1;
+              push_y0 = lad_y0_l1; push_y2 = lad_y2_l1;
+            end
+          end
         end
-        if (vcnt == 9'd1) begin
-          lk_pred[1] <= lk_hit[1];
-          lk_hit[1]  <= 1'b0;
-        end
-      end
-      // queue at the START of each line for the NEXT line: a full line of
-      // render lead (banks are 2 bits, display is never within 1 of render).
-      // EXCEPTION (measured, 2026-07-12): the game's raster-effect write
-      // schedule parks the frame-start scroll values at ~h75 of line 261
-      // and writes line N's per-line values at ~h70-100 of line N-1. A
-      // kick at h0 samples lines 0 and 2 one phase EARLY (10-17 px of
-      // vertical offset in effect scenes - the "clouds" artefact); every
-      // other line lands within 1 px of the value real hardware uses. So
-      // WHEN THE RAMP IS LIVE (lk_pred, one-frame write predictor above)
-      // lines 0 and 2 kick at h=120, after the write slot, trading their
-      // render lead 5088 -> 3648 cycles. Scenes without sy0/sy2 raster
-      // writes keep the full h0 lead: an unconditional late kick was
-      // measured completing mid-scanout 1,357 times over a 5,200-frame
-      // soak in heavy stage-2 attract frames, putting stale left-edge
-      // pixels on screen (the tb late-line counters watch this).
-      if (ce_pix &&
-          hcnt == (lk_late ? 9'd88 : 9'd0) &&
-          32'(next_v) < V_VIS) begin
-        if (kf_cnt == 3'd4) begin
-          rnd_overrun <= 1'b1;                     // hopelessly behind
-          o_dbg_ovr <= o_dbg_ovr + 16'd1;
-        end else begin
-          kick_fifo[kf_wr] <= {frame_par, next_v};
-          kf_wr <= kf_wr + 2'd1;
-          kf_push = 1'b1;
-          if (next_v == 9'd0)
-            for (int i = 0; i < 6; i++)
-              pred_sw[i] <= (r_scroll[i] - prev_fg[i]) + r_scroll[i]
-                            - r_window[i];
+        if (do_push) begin
+          if (kf_cnt == 4'd8) begin
+            rnd_overrun <= 1'b1;                   // hopelessly behind
+            o_dbg_ovr <= o_dbg_ovr + 16'd1;
+          end else begin
+            kick_fifo[kf_wr] <= {frame_par, push_line,
+                                 push_y2, rs_sw_x[2],
+                                 rs_sw_y[1], rs_sw_x[1],
+                                 push_y0, rs_sw_x[0]};
+            kf_wr <= kf_wr + 3'd1;
+            kf_push = 1'b1;
+          end
         end
       end
-      if (kf_cnt != 0 && !rnd_busy && !rnd_start) begin
-        rnd_start <= 1'b1;
-        rnd_line  <= kick_fifo[kf_rd][7:0];
-        lb_bank   <= kick_fifo[kf_rd][1:0];
-        cur_par   <= kick_fifo[kf_rd][9];
-        rnd_line1 <= (kick_fifo[kf_rd][7:0] == 8'd1);
-        kf_rd <= kf_rd + 2'd1;
+      // Two-stage pop: latch the FIFO word first, hand it to the
+      // renderer a cycle later. The FIFO-mux read and every consumer
+      // load are thereby separated into reg->reg moves (1 extra clk of
+      // kick latency against a 5088-clk budget).
+      if (kf_cnt != 0 && !rnd_busy && !rnd_start && !pop_pend) begin
+        pop_word <= kick_fifo[kf_rd];
+        pop_pend <= 1'b1;
+        kf_rd <= kf_rd + 3'd1;
         kf_pop = 1'b1;
+      end
+      if (pop_pend) begin
+        pop_pend  <= 1'b0;
+        rnd_start <= 1'b1;
+        rnd_line  <= pop_word[96 +: 8];
+        lb_bank   <= pop_word[96 +: 2];
+        cur_par   <= pop_word[105];
+        {rnd_sw_y[2], rnd_sw_x[2],
+         rnd_sw_y[1], rnd_sw_x[1],
+         rnd_sw_y[0], rnd_sw_x[0]} <= pop_word[95:0];
       end
       // single counter update: a same-edge push+pop must net ZERO. The
       // old two-assignment form lost the push (last write won), so the
@@ -965,12 +979,9 @@ module i4220_vdp #(
             if (i_addr >= 19'h78860 && i_addr < 19'h7886C)
               r_window[3'((i_addr - 19'h78860) >> 1)]
                 <= comb16(r_window[3'((i_addr - 19'h78860) >> 1)]);
-            else if (i_addr >= 19'h78870 && i_addr < 19'h7887C) begin
+            else if (i_addr >= 19'h78870 && i_addr < 19'h7887C)
               r_scroll[3'((i_addr - 19'h78870) >> 1)]
                 <= comb16(r_scroll[3'((i_addr - 19'h78870) >> 1)]);
-              prev_fg[3'((i_addr - 19'h78870) >> 1)]
-                <= r_scroll[3'((i_addr - 19'h78870) >> 1)];
-            end
             else if (i_addr >= 19'h78840 && i_addr < 19'h7884E) begin
               blit_regs[3'((i_addr - 19'h78840) >> 1)]
                 <= comb16(blit_regs[3'((i_addr - 19'h78840) >> 1)]);
@@ -1095,7 +1106,7 @@ module i4220_vdp #(
     end else begin
       if (rnd_done)
         bank_tag[rnd_line[1:0]] <= {cur_par, rnd_line};
-      so_stale <= (bank_tag[vcnt[1:0]] != {frame_par, vcnt[7:0]});
+      so_stale <= (bank_tag[vdisp[1:0]] != {frame_par, vdisp[7:0]});
     end
   end
 
@@ -1111,23 +1122,18 @@ module i4220_vdp #(
       dbg_tagbad <= '0;   dbg_stale <= '0;
       dbg_tagbad_q <= '0; dbg_stale_q <= '0;
     end else begin
-      if (rnd_start && rnd_line < 8'd3) begin
-        case (rnd_line[1:0])
-          2'd0: o_dbg_rend_sx2_0 <= rs_sw_x[2];
-          2'd1: o_dbg_rend_sx2_1 <= rs_sw_x[2];
-          default: o_dbg_rend_sx2_2 <= rs_sw_x[2];
-        endcase
-      end
-      if (ce_pix && vcnt < 9'd3 && hcnt == 9'd160) begin
-        case (vcnt[1:0])
+      // rend values come from the renderer's own first-pass tap; disp
+      // rows latch the live view at each top line's scan-out h160
+      if (ce_pix && vdisp < 9'd3 && hcnt == 9'd160) begin
+        case (vdisp[1:0])
           2'd0: o_dbg_disp_sx2_0 <= rs_sw_x[2];
           2'd1: o_dbg_disp_sx2_1 <= rs_sw_x[2];
           default: o_dbg_disp_sx2_2 <= rs_sw_x[2];
         endcase
-        if (bank_tag[vcnt[1:0]] != {frame_par, vcnt[7:0]})
-          dbg_tagbad[vcnt[1:0]] <= 1'b1;
+        if (bank_tag[vdisp[1:0]] != {frame_par, vdisp[7:0]})
+          dbg_tagbad[vdisp[1:0]] <= 1'b1;
         if (so_stale)
-          dbg_stale[vcnt[1:0]] <= 1'b1;
+          dbg_stale[vdisp[1:0]] <= 1'b1;
       end
       // frame boundary: publish last frame's flags, clear accumulators
       // (h0 of line 0 is before this frame's h160 captures)
@@ -1148,10 +1154,12 @@ module i4220_vdp #(
 
   always_ff @(posedge clk) begin
     if (ce_pix) begin
-      // stage 0: pen fetch for current hcnt (bank = the line just rendered)
-      de0 <= (32'(hcnt) < H_VIS) && (32'(vcnt) < V_VIS);
+      // stage 0: pen fetch for current hcnt (bank = line vdisp, rendered
+      // during the previous game line). All vertical output timing uses
+      // vdisp so vsync and the active window shift together.
+      de0 <= (32'(hcnt) < H_VIS) && (32'(vdisp) < V_VIS);
       hb0 <= !(32'(hcnt) < H_VIS);
-      vb0 <= !(32'(vcnt) < V_VIS);
+      vb0 <= !(32'(vdisp) < V_VIS);
       so_pen <= (32'(hcnt) >= H_VIS) ? 12'd0
               : so_stale              ? r_bg
               :                         lb_rq;
@@ -1168,7 +1176,7 @@ module i4220_vdp #(
       o_hblank <= hb1;
       o_vblank <= vb1;
       o_hs <= (32'(hcnt) >= HS_BEG && 32'(hcnt) < HS_END);
-      o_vs <= (32'(vcnt) >= VS_BEG && 32'(vcnt) < VS_END);
+      o_vs <= (32'(vdisp) >= VS_BEG && 32'(vdisp) < VS_END);
     end
   end
 

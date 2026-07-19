@@ -367,6 +367,20 @@ module tb_system;
     end
   end
 
+  // v13probe: per-frame sy2 histogram print (cross-check vs RASTERLOG)
+  bit probelog_en;
+  initial probelog_en = $test$plusargs("PROBELOG") != 0;
+  always_ff @(posedge clk) begin
+    if (probelog_en && dut.u_vdp.ce_pix
+        && dut.u_vdp.hcnt == 9'd0 && dut.u_vdp.vcnt == 9'd225)
+      $display("PROBE f=%0d b0=%0d b1=%0d b2=%0d b3=%0d b4=%0d vbl=%0d tot=%0d",
+               frames_seen,
+               dut.u_vdp.o_dbg_rend_sx2_0, dut.u_vdp.o_dbg_disp_sx2_0,
+               dut.u_vdp.o_dbg_rend_sx2_1, dut.u_vdp.o_dbg_disp_sx2_1,
+               dut.u_vdp.o_dbg_rend_sx2_2, dut.u_vdp.o_dbg_disp_sx2_2,
+               dut.u_vdp.o_dbg_topflags);
+  end
+
   // sound-path probes
   longint ymwr_cnt, s_iack1_cnt, s_iack2_cnt, ymirq_seen;
   logic [7:0] last_ym_a0_0, last_ym_a0_1;
@@ -387,9 +401,6 @@ module tb_system;
   initial oki_first = -1;
   int         rb_cyc, rb_max, rb_over, rb_over_frame, rb_late;
   int         rb_late_vis, rb_late_maxh, rb_late_chg, late_fh;
-  int         lk_ramp_frames;  // frames the frame-wide detector late-kicked
-  int         lk_cool_n;       // tearing-backoff activations
-  logic [7:0] lk_cool_d;
   int         cost_fh;         // +LINECOST=<path> per-line render cycles
   int         dswrd_n;      // main-CPU DSW port reads logged
   int         rs_eff_mm;    // registered scroll view vs 1-clk-delay model
@@ -405,9 +416,23 @@ module tb_system;
   int         rt_expose_l [4];  // exposed pixels on lines 0-3
   int         rt_expose_fr;     // frames with any exposure
   int         rt_expose_flast;  // last frame counted (edge detect)
-  logic [8:0] lk_nv;
-  logic [31:0] lk_snap [2];      // [0]=line0, [1]=line2 sy0/sy2 at h0
-  logic       lk_changed [2];
+  // top-lines delta gate: |consumed sx2 (render tap) - sx2 at the
+  // line's own scanout h160| for lines 1-2 during tl_ramp frames.
+  // Pre-fix this measured 0x30 (48px) in the stage-2 cloud demo;
+  // the frame-top latch must hold it to drift level (<= 4).
+  // v9 snapshot-integrity gate (see the check below): consumed scroll
+  // must equal the tb's own record of the (line, h0) register state
+  logic [15:0] snap_model [0:255];
+  int          snap_mm;        // mismatches (gate: must be 0)
+  int          snap_checked;   // renders checked
+  // v14: ladder-class (sy) model - EVERY line 0..223 consumes the sy
+  // view from its own (N,h170); mirrors the RTL's lad_* stash for
+  // lines 0/1 and the plain push for lines 2+
+  logic [15:0] snap_model_y0 [0:255];
+  logic [15:0] snap_model_y2 [0:255];
+  int          snap_y_mm;
+  logic [15:0] tb_scrwr;       // tb-side ramp detector (for +RAMPDUMP)
+  logic        tb_ramp;
   initial begin
     string lpath;
     late_fh = 0;
@@ -483,52 +508,80 @@ module tb_system;
     if (!dut.ym_irq_n) ymirq_seen <= ymirq_seen + 1;
     // renderer line-budget probe (budget = 424 * PIXDIV clocks per line)
     // visible-artefact counter: a line completing while its own scan-out
-    // row is already displaying showed background on its left portion
-    if (dut.u_vdp.rnd_done && dut.u_vdp.vcnt == {1'b0, dut.u_vdp.rnd_line} &&
+    // row (vdisp, one line behind the game timeline in v9) is already
+    // displaying showed background on its left portion
+    if (dut.u_vdp.rnd_done && dut.u_vdp.vdisp == {1'b0, dut.u_vdp.rnd_line} &&
         dut.u_vdp.hcnt > 9'd8)
       rb_late <= rb_late + 1;
-    // late-completion characterisation: resolve is the final 320-clk
-    // monotonic pass at 1 px/clk, beam consumes 1 px / 12 clk, so a
-    // completion at hcnt >= 28 means the beam already read pixels the
-    // resolver had not written (stale bank content on the left edge).
-    // Track whether sy0/sy2 changed between h0 and h120 of the kick line
-    // to evaluate a conditional (ramp-active-only) late kick.
-    if (dut.u_vdp.ce_pix && dut.u_vdp.hcnt == 9'd0) begin
-      lk_nv = (dut.u_vdp.vcnt == dut.u_vdp.vlast) ? 9'd0 : dut.u_vdp.vcnt + 9'd1;
-      if (lk_nv == 9'd0 || lk_nv == 9'd2)
-        lk_snap[lk_nv[1]] <= {dut.u_vdp.r_scroll[0], dut.u_vdp.r_scroll[4]};
-    end
-    if (dut.u_vdp.ce_pix && dut.u_vdp.hcnt == 9'd120) begin
-      lk_nv = (dut.u_vdp.vcnt == dut.u_vdp.vlast) ? 9'd0 : dut.u_vdp.vcnt + 9'd1;
-      if (lk_nv == 9'd0 || lk_nv == 9'd2)
-        lk_changed[lk_nv[1]] <=
-          lk_snap[lk_nv[1]] != {dut.u_vdp.r_scroll[0], dut.u_vdp.r_scroll[4]};
-    end
-    // frame-wide ramp detector activity: count frames that late-kick all
-    if (dut.u_vdp.ce_pix && dut.u_vdp.hcnt == 9'd1 && dut.u_vdp.vcnt == 9'd0
-        && dut.u_vdp.lk_ramp)
-      lk_ramp_frames <= lk_ramp_frames + 1;
     // bank-tag / parity audit: count pixels where scanout reads a stale bank
     if (dut.u_vdp.ce_pix && dut.u_vdp.so_stale &&
-        32'(dut.u_vdp.hcnt) < 320 && 32'(dut.u_vdp.vcnt) < 224) begin
+        32'(dut.u_vdp.hcnt) < 320 && 32'(dut.u_vdp.vdisp) < 224) begin
       bt_stale_n <= bt_stale_n + 1;
-      if (dut.u_vdp.vcnt < 9'd4)
-        bt_stale_l[dut.u_vdp.vcnt[1:0]] <= bt_stale_l[dut.u_vdp.vcnt[1:0]] + 1;
+      if (dut.u_vdp.vdisp < 9'd4)
+        bt_stale_l[dut.u_vdp.vdisp[1:0]] <= bt_stale_l[dut.u_vdp.vdisp[1:0]] + 1;
     end
     // in-flight exposure (see declarations): displayed pixel from a bank
-    // matching {frame_par, vcnt} while the renderer is mid-flight on that
+    // matching {frame_par, vdisp} while the renderer is mid-flight on that
     // same line and parity
     if (dut.u_vdp.ce_pix && !dut.u_vdp.so_stale && dut.u_vdp.rnd_busy &&
-        32'(dut.u_vdp.hcnt) < 320 && 32'(dut.u_vdp.vcnt) < 224 &&
-        dut.u_vdp.rnd_line == dut.u_vdp.vcnt[7:0] &&
+        32'(dut.u_vdp.hcnt) < 320 && 32'(dut.u_vdp.vdisp) < 224 &&
+        dut.u_vdp.rnd_line == dut.u_vdp.vdisp[7:0] &&
         dut.u_vdp.cur_par == dut.u_vdp.frame_par) begin
       rt_expose_n <= rt_expose_n + 1;
-      if (dut.u_vdp.vcnt < 9'd4)
-        rt_expose_l[dut.u_vdp.vcnt[1:0]] <= rt_expose_l[dut.u_vdp.vcnt[1:0]] + 1;
+      if (dut.u_vdp.vdisp < 9'd4)
+        rt_expose_l[dut.u_vdp.vdisp[1:0]] <= rt_expose_l[dut.u_vdp.vdisp[1:0]] + 1;
       if (rt_expose_flast != frames_seen + 1) begin
         rt_expose_fr <= rt_expose_fr + 1;
         rt_expose_flast <= frames_seen + 1;
       end
+    end
+    // tb-side ramp detector (the VDP's own detectors are gone in v9):
+    // >= 8 scroll-register writes inside the visible frame -> ramp frame
+    // next frame. Drives the +RAMPDUMP scene capture only.
+    if (dut.u_vdp.reg_w && dut.u_vdp.i_addr >= 19'h78870 &&
+        dut.u_vdp.i_addr < 19'h7887C && 32'(dut.u_vdp.vcnt) < 224 &&
+        tb_scrwr != 16'hFFFF)
+      tb_scrwr <= tb_scrwr + 16'd1;
+    if (dut.u_vdp.ce_pix && dut.u_vdp.hcnt == 9'd0 &&
+        dut.u_vdp.vcnt == dut.u_vdp.vlast) begin
+      tb_ramp  <= (tb_scrwr >= 16'd8);
+      tb_scrwr <= '0;
+    end
+    // v12.2/v14 snapshot-integrity gate. Block class (sx*, sy1): lines
+    // 2+ consume the state at their own (N,h170); lines 0/1 at
+    // (1,h200)/(1,h208). Ladder class (sy0/sy2, v14): EVERY line
+    // consumes the state at its own (N,h170). The tb records its own
+    // copies at the same instants and compares at render start; any
+    // mismatch is a kick-FIFO indexing/overwrite/stash bug.
+    if (dut.u_vdp.ce_pix && dut.u_vdp.hcnt == 9'd170 &&
+        32'(dut.u_vdp.vcnt) < 224) begin
+      if (32'(dut.u_vdp.vcnt) >= 2)
+        snap_model[dut.u_vdp.vcnt[7:0]] <= dut.u_vdp.rs_sw_x[2];
+      snap_model_y0[dut.u_vdp.vcnt[7:0]] <= dut.u_vdp.rs_sw_y[0];
+      snap_model_y2[dut.u_vdp.vcnt[7:0]] <= dut.u_vdp.rs_sw_y[2];
+    end
+    if (dut.u_vdp.ce_pix && dut.u_vdp.vcnt == 9'd1 && dut.u_vdp.hcnt == 9'd200)
+      snap_model[0] <= dut.u_vdp.rs_sw_x[2];
+    if (dut.u_vdp.ce_pix && dut.u_vdp.vcnt == 9'd1 && dut.u_vdp.hcnt == 9'd208)
+      snap_model[1] <= dut.u_vdp.rs_sw_x[2];
+    if (dut.u_vdp.rnd_start) begin
+      if (dut.u_vdp.rnd_sw_x[2] !== snap_model[dut.u_vdp.rnd_line]) begin
+        snap_mm <= snap_mm + 1;
+        if (snap_mm < 40)
+          $display("SNAPMM f=%0d line=%0d used=%04x model=%04x",
+                   frames_seen, dut.u_vdp.rnd_line,
+                   dut.u_vdp.rnd_sw_x[2], snap_model[dut.u_vdp.rnd_line]);
+      end
+      if (dut.u_vdp.rnd_sw_y[0] !== snap_model_y0[dut.u_vdp.rnd_line] ||
+          dut.u_vdp.rnd_sw_y[2] !== snap_model_y2[dut.u_vdp.rnd_line]) begin
+        snap_y_mm <= snap_y_mm + 1;
+        if (snap_y_mm < 40)
+          $display("SNAPYMM f=%0d line=%0d y0=%04x/%04x y2=%04x/%04x",
+                   frames_seen, dut.u_vdp.rnd_line,
+                   dut.u_vdp.rnd_sw_y[0], snap_model_y0[dut.u_vdp.rnd_line],
+                   dut.u_vdp.rnd_sw_y[2], snap_model_y2[dut.u_vdp.rnd_line]);
+      end
+      snap_checked <= snap_checked + 1;
     end
     // DSW port read log: main CPU reads of 0xE00002 and the data returned
     // (m_asn_d maintained by the bus-trace block above)
@@ -538,16 +591,12 @@ module tb_system;
       dswrd_n <= dswrd_n + 1;
     end
     // registered (scroll - window) view must track the registers with
-    // exactly 1 clk lag; line-1 renders see the predicted fg values
+    // exactly 1 clk lag (plain in v9 - no muxing)
     exp_sy0 <= dut.u_vdp.r_scroll[0] - dut.u_vdp.r_window[0];
-    exp_sx0 <= dut.u_vdp.rnd_line1 ? dut.u_vdp.pred_sw[1]
-             : dut.u_vdp.r_scroll[1] - dut.u_vdp.r_window[1];
-    exp_sy1 <= dut.u_vdp.rnd_line1 ? dut.u_vdp.pred_sw[2]
-             : dut.u_vdp.r_scroll[2] - dut.u_vdp.r_window[2];
-    exp_sx1 <= dut.u_vdp.rnd_line1 ? dut.u_vdp.pred_sw[3]
-             : dut.u_vdp.r_scroll[3] - dut.u_vdp.r_window[3];
-    exp_sx2 <= dut.u_vdp.rnd_line1 ? dut.u_vdp.pred_sw[5]
-             : dut.u_vdp.r_scroll[5] - dut.u_vdp.r_window[5];
+    exp_sx0 <= dut.u_vdp.r_scroll[1] - dut.u_vdp.r_window[1];
+    exp_sy1 <= dut.u_vdp.r_scroll[2] - dut.u_vdp.r_window[2];
+    exp_sx1 <= dut.u_vdp.r_scroll[3] - dut.u_vdp.r_window[3];
+    exp_sx2 <= dut.u_vdp.r_scroll[5] - dut.u_vdp.r_window[5];
     if (frames_seen > 0 &&
         (dut.u_vdp.rs_sw_y[0] !== exp_sy0 ||
          dut.u_vdp.rs_sw_x[0] !== exp_sx0 ||
@@ -555,15 +604,13 @@ module tb_system;
          dut.u_vdp.rs_sw_x[1] !== exp_sx1 ||
          dut.u_vdp.rs_sw_x[2] !== exp_sx2))
       rs_eff_mm <= rs_eff_mm + 1;
-    if (dut.u_vdp.rnd_done && dut.u_vdp.vcnt == {1'b0, dut.u_vdp.rnd_line} &&
+    if (dut.u_vdp.rnd_done && dut.u_vdp.vdisp == {1'b0, dut.u_vdp.rnd_line} &&
         dut.u_vdp.hcnt > 9'd8) begin
       if (dut.u_vdp.hcnt >= 9'd28) rb_late_vis <= rb_late_vis + 1;
       if (32'(dut.u_vdp.hcnt) > rb_late_maxh) rb_late_maxh <= 32'(dut.u_vdp.hcnt);
-      if (lk_changed[dut.u_vdp.rnd_line[1]]) rb_late_chg <= rb_late_chg + 1;
       if (late_fh != 0)
-        $fwrite(late_fh, "%0d,%0d,%0d,%0d\n", frames_seen,
-                dut.u_vdp.rnd_line, dut.u_vdp.hcnt,
-                32'(lk_changed[dut.u_vdp.rnd_line[1]]));
+        $fwrite(late_fh, "%0d,%0d,%0d,0\n", frames_seen,
+                dut.u_vdp.rnd_line, dut.u_vdp.hcnt);
     end
     if (dut.u_vdp.rnd_busy) rb_cyc <= rb_cyc + 1;
     else begin
@@ -577,10 +624,6 @@ module tb_system;
                 dut.u_vdp.rnd_line, rb_cyc);
       rb_cyc <= 0;
     end
-    // tearing-backoff activations (lk_cool armed by the VDP)
-    lk_cool_d <= dut.u_vdp.lk_cool;
-    if (dut.u_vdp.lk_cool == 8'd255 && lk_cool_d != 8'd255)
-      lk_cool_n <= lk_cool_n + 1;
   end
 
   // audio capture: +AUDIODUMP=<path> writes raw s16le mono at sys/2048
@@ -780,7 +823,7 @@ module tb_system;
     while (frames_seen < total_frames) begin
       @(posedge clk);
       // ramp-frame accounting: once per frame while the detector is active
-      if (frames_seen > ramp_flast && dut.u_vdp.lk_ramp) begin
+      if (frames_seen > ramp_flast && tb_ramp) begin
         ramp_flast = frames_seen;
         ramp_seen = ramp_seen + 1;
       end
@@ -788,9 +831,9 @@ module tb_system;
           (frames_seen > last_dumped &&
            frames_seen >= dump_from && frames_seen <= dump_to) ||
           (frames_seen > last_dumped && ramp_dumped < ramp_dump &&
-           dut.u_vdp.lk_ramp && (ramp_seen - 1) % ramp_stride == 0)) begin
+           tb_ramp && (ramp_seen - 1) % ramp_stride == 0)) begin
         if (frames_seen > last_dumped && ramp_dumped < ramp_dump &&
-            dut.u_vdp.lk_ramp)
+            tb_ramp)
           ramp_dumped = ramp_dumped + 1;
         last_dumped = frames_seen;
         dump_frame(outdir, frames_seen);
@@ -834,16 +877,21 @@ module tb_system;
     $display("render: worst_line_cycles=%0d prescan_rejects=%0d over_budget_lines=%0d last_over_frame=%0d",
              rb_max, dut.u_vdp.u_render.dbg_pst_rej, rb_over, rb_over_frame);
     $display("render late_lines=%0d (completed mid-scanout)", rb_late);
-    $display("render late detail: beam_visible=%0d (hcnt>=28) max_hcnt=%0d sy_changed=%0d",
-             rb_late_vis, rb_late_maxh, rb_late_chg);
-    $display("lk ramp frames=%0d rs view mismatches=%0d cool activations=%0d",
-             lk_ramp_frames, rs_eff_mm, lk_cool_n);
+    $display("render late detail: beam_visible=%0d (hcnt>=28) max_hcnt=%0d",
+             rb_late_vis, rb_late_maxh);
+    $display("rs view mismatches=%0d", rs_eff_mm);
     $display("bank stale scanout: total=%0d line0=%0d line1=%0d line2=%0d line3=%0d",
              bt_stale_n, bt_stale_l[0], bt_stale_l[1], bt_stale_l[2], bt_stale_l[3]);
     $display("%s in-flight exposure: pixels=%0d frames=%0d line0=%0d line1=%0d line2=%0d line3=%0d",
              (rt_expose_n != 0) ? "FAIL" : "PASS",
              rt_expose_n, rt_expose_fr,
              rt_expose_l[0], rt_expose_l[1], rt_expose_l[2], rt_expose_l[3]);
+    $display("%s scroll snapshot: renders_checked=%0d mismatches=%0d",
+             (snap_mm != 0 || snap_checked == 0) ? "FAIL" : "PASS",
+             snap_checked, snap_mm);
+    $display("%s ladder snapshot (sy0/sy2 own-h170): mismatches=%0d",
+             (snap_y_mm != 0 || snap_checked == 0) ? "FAIL" : "PASS",
+             snap_y_mm);
     if (late_fh != 0) $fclose(late_fh);
     $display("render load: div_cycles=%0d ovl_stall_cycles=%0d",
              dut.u_vdp.u_render.dbg_div_cyc, dut.u_vdp.u_render.dbg_ovl_stall);
