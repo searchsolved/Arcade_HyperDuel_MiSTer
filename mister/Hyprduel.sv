@@ -219,7 +219,13 @@ assign BUTTONS = 0;
   wire  [4:0] r5, g5, b5;
   wire signed [15:0] audio;
 
-  hyprduel_sys #(.GFX_AW(22), .P_PIXDIV(12)) core (
+`ifdef GAME_MAGERROR
+  localparam bit SHELL_MAGERROR = 1;
+`else
+  localparam bit SHELL_MAGERROR = 0;
+`endif
+  hyprduel_sys #(.GFX_AW(22), .P_PIXDIV(12),
+                 .GAME_MAGERROR(SHELL_MAGERROR)) core (
     .i_compat60(status[7]),
     .clk(clk_sys), .rst_n(~reset),
     .o_hs(hs), .o_vs(vs), .o_de(de), .o_ce_pix(ce_pix),
