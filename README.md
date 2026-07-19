@@ -4,9 +4,39 @@ Hyper Duel (Technosoft, 1993, TEC442-A board) arcade core for MiSTer,
 built around the first FPGA implementation of the **Imagetek I4220**
 video chip - the VDP behind the entire Metro Corp. arcade catalogue
 (I4100/I4220/I4300 are close variants). No datasheet for this chip has
-ever surfaced; the implementation was built against MAME as a
-machine-checked oracle and verified beyond it against real hardware
-(board photographs and original-PCB footage).
+ever surfaced: the implementation was built against MAME as a
+machine-checked oracle, then verified past it against the hardware
+itself - board photographs for the clock tree and bus widths, and
+original-PCB recordings analysed down to individual scanlines and
+spectral lines.
+
+That verification went deep enough to surface things nobody had
+documented:
+
+- **A MAME bug, found and fixed here.** The CRTC registers MAME has
+  always logged and ignored turn out to program the monitor's visible
+  window. The well-known top-of-screen scroll glitch in emulation of
+  this game is hidden scratch lines the real monitor never shows - and
+  the same mechanism likely affects the whole Metro family in MAME.
+  This core implements the window correctly; the full register decode
+  and an upstream bug report ship in `docs/`.
+- **The board's true refresh rate.** It runs at 60.24 Hz, not 60 Hz -
+  measured three independent ways from two different PCBs, including
+  the board's own refresh-locked electrical hum isolated out of the
+  audio of PCB recordings.
+- **The OKI sample clock is 2.000 MHz** (emulation has been running
+  about 3 percent sharp), and the sample-to-music mix on real boards
+  is hotter than emulation plays it.
+
+The CPUs and sound are proven cycle-accurate cores: two of Jorge
+Cwik's **fx68k** (cycle-exact 68000), Jose Tejada's **jt51** (YM2151)
+and **jt6295** (OKI M6295). The I4220 RTL, system glue, SDRAM
+controller and MiSTer shell are new for this project, written in
+collaboration with Anthropic's Claude (Fable 5) - and because
+AI-assisted RTL deserves extra scrutiny, nothing here rests on trust:
+every accuracy claim is machine-checked, and the full Verilator parity
+suite, stress soaks and analysis tooling ship in this repo so each one
+can be reproduced from source.
 
 Status: released. Playable start to finish on hardware with high-score
 autosave, the measured-native 60.24 Hz video timing (60 Hz compat
