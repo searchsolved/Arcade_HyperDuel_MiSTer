@@ -24,7 +24,7 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DB_ID = "searchsolved/hyperduel"
-RELEASE_TAG = "v1.0"
+RELEASE_TAG = "v1.1"
 RELEASE_BASE = (
     "https://github.com/searchsolved/Arcade_HyperDuel_MiSTer/releases/download/"
     + RELEASE_TAG + "/"
@@ -36,9 +36,13 @@ RELEASE_BASE = (
 FILES = [
     ("releases/Hyprduel_20260719.rbf", "_Arcade/cores/hyprduel_20260719.rbf",
      "Hyprduel_20260719.rbf"),
+    ("releases/Magerror_20260719.rbf", "_Arcade/cores/magerror_20260719.rbf",
+     "Magerror_20260719.rbf"),
     ("mra/Hyper Duel.mra", "_Arcade/Hyper Duel.mra", "Hyper.Duel.mra"),
     ("mra/Hyper Duel (Set 2).mra", "_Arcade/Hyper Duel (Set 2).mra",
      "Hyper.Duel.Set.2.mra"),
+    ("mra/Magical Error wo Sagase.mra", "_Arcade/Magical Error wo Sagase.mra",
+     "Magical.Error.wo.Sagase.mra"),
 ]
 
 

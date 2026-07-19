@@ -12,6 +12,8 @@
     <name>Magical Error wo Sagase</name>
     <setname>magerror</setname>
     <rbf>magerror</rbf>
+    <!-- RBF filename on the SD card: cores/magerror.rbf or
+         cores/magerror_YYYYMMDD.rbf (downloader convention) -->
     <mameversion>0288</mameversion>
     <year>1994</year>
     <manufacturer>Technosoft / Jaleco</manufacturer>

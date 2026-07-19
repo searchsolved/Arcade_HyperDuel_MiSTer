@@ -1,6 +1,7 @@
-# Hyper Duel - MiSTer FPGA Core
+# Hyper Duel / Magical Error - MiSTer FPGA Core
 
-Hyper Duel (Technosoft, 1993, TEC442-A board) arcade core for MiSTer,
+Hyper Duel (Technosoft, 1993) and Magical Error wo Sagase
+(Technosoft/Jaleco, 1994) arcade cores for MiSTer,
 built around the first FPGA implementation of the **Imagetek I4220**
 video chip - the VDP behind the entire Metro Corp. arcade catalogue
 (I4100/I4220/I4300 are close variants). No datasheet for this chip has
@@ -33,8 +34,9 @@ documented:
   is hotter than emulation plays it.
 
 The CPUs and sound are proven cycle-accurate cores: two of Jorge
-Cwik's **fx68k** (cycle-exact 68000), Jose Tejada's **jt51** (YM2151)
-and **jt6295** (OKI M6295). The I4220 RTL, system glue, SDRAM
+Cwik's **fx68k** (cycle-exact 68000), Jose Tejada's **jt51** (YM2151,
+Hyper Duel) and **jt6295** (OKI M6295), and Sehyeon Kim's **IKAOPLL**
+(YM2413, Magical Error). The I4220 RTL, system glue, SDRAM
 controller and MiSTer shell are new for this project, written in
 collaboration with Anthropic's Claude (Fable 5) - and because
 AI-assisted RTL deserves extra scrutiny, nothing here rests on trust:
@@ -42,12 +44,15 @@ every accuracy claim is machine-checked, and the full Verilator parity
 suite, stress soaks and analysis tooling ship in this repo so each one
 can be reproduced from source.
 
-Status: released. Playable start to finish on hardware with high-score
-autosave, the measured-native 60.24 Hz video timing (60 Hz compat
-option in the OSD for strict displays), and the real display window the
-arcade monitor showed - including two picture lines every emulator to
-date has cropped, and minus two scratch lines every emulator to date
-has wrongly displayed. The renderer measures zero missed scanlines
+Status: both games released. Playable start to finish on hardware.
+Hyper Duel has high-score autosave, the measured-native 60.24 Hz video
+timing (60 Hz compat option in the OSD for strict displays), and the
+real display window the arcade monitor showed - including two picture
+lines every emulator to date has cropped, and minus two scratch lines
+every emulator to date has wrongly displayed. Magical Error shares the
+same I4220 VDP, CRTC window and verified renderer; it replaces the
+YM2151 with a YM2413 (OPLL) and moves the larger shared RAM to SDRAM.
+The renderer measures zero missed scanlines
 across long stress simulations.
 
 ## Install
@@ -66,8 +71,9 @@ db_url = https://raw.githubusercontent.com/searchsolved/Arcade_HyperDuel_MiSTer/
 put the RBF in `/media/fat/_Arcade/cores/` and the MRAs in
 `/media/fat/_Arcade/`.
 
-Either way you need the MAME `hyprduel` ROM set (0.288 naming) in
-`/media/fat/games/mame/`. No ROM data is included here.
+Either way you need the matching MAME ROM sets (0.288 naming) in
+`/media/fat/games/mame/`: `hyprduel.zip` for Hyper Duel,
+`magerror.zip` for Magical Error. No ROM data is included here.
 
 ## Controls and options
 
