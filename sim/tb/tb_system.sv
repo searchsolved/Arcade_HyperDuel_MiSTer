@@ -510,8 +510,8 @@ module tb_system;
     // visible-artefact counter: a line completing while its own scan-out
     // row (vdisp, one line behind the game timeline in v9) is already
     // displaying showed background on its left portion
-    if (dut.u_vdp.rnd_done && dut.u_vdp.vdisp == {1'b0, dut.u_vdp.rnd_line} &&
-        dut.u_vdp.hcnt > 9'd8)
+    if (dut.u_vdp.rnd_done && dut.u_vdp.vsrc == {1'b0, dut.u_vdp.rnd_line} &&
+        32'(dut.u_vdp.vdisp) < 224 && dut.u_vdp.hcnt > 9'd8)
       rb_late <= rb_late + 1;
     // bank-tag / parity audit: count pixels where scanout reads a stale bank
     if (dut.u_vdp.ce_pix && dut.u_vdp.so_stale &&
@@ -521,11 +521,12 @@ module tb_system;
         bt_stale_l[dut.u_vdp.vdisp[1:0]] <= bt_stale_l[dut.u_vdp.vdisp[1:0]] + 1;
     end
     // in-flight exposure (see declarations): displayed pixel from a bank
-    // matching {frame_par, vdisp} while the renderer is mid-flight on that
-    // same line and parity
+    // matching {frame_par, vsrc} while the renderer is mid-flight on that
+    // same source line and parity (v15: scanout sources vsrc = vdisp +
+    // CRTC first-visible-line)
     if (dut.u_vdp.ce_pix && !dut.u_vdp.so_stale && dut.u_vdp.rnd_busy &&
         32'(dut.u_vdp.hcnt) < 320 && 32'(dut.u_vdp.vdisp) < 224 &&
-        dut.u_vdp.rnd_line == dut.u_vdp.vdisp[7:0] &&
+        dut.u_vdp.rnd_line == dut.u_vdp.vsrc[7:0] &&
         dut.u_vdp.cur_par == dut.u_vdp.frame_par) begin
       rt_expose_n <= rt_expose_n + 1;
       if (dut.u_vdp.vdisp < 9'd4)
@@ -553,8 +554,11 @@ module tb_system;
     // consumes the state at its own (N,h170). The tb records its own
     // copies at the same instants and compares at render start; any
     // mismatch is a kick-FIFO indexing/overwrite/stash bug.
+    // v15: own-h170 capture range covers the shifted window (lines up
+    // to 223 + crtc_vfirst; capturing the extra tail lines is harmless
+    // when the window is not shifted)
     if (dut.u_vdp.ce_pix && dut.u_vdp.hcnt == 9'd170 &&
-        32'(dut.u_vdp.vcnt) < 224) begin
+        32'(dut.u_vdp.vcnt) < 224 + 32'(dut.u_vdp.crtc_vfirst_q)) begin
       if (32'(dut.u_vdp.vcnt) >= 2)
         snap_model[dut.u_vdp.vcnt[7:0]] <= dut.u_vdp.rs_sw_x[2];
       snap_model_y0[dut.u_vdp.vcnt[7:0]] <= dut.u_vdp.rs_sw_y[0];
@@ -604,8 +608,8 @@ module tb_system;
          dut.u_vdp.rs_sw_x[1] !== exp_sx1 ||
          dut.u_vdp.rs_sw_x[2] !== exp_sx2))
       rs_eff_mm <= rs_eff_mm + 1;
-    if (dut.u_vdp.rnd_done && dut.u_vdp.vdisp == {1'b0, dut.u_vdp.rnd_line} &&
-        dut.u_vdp.hcnt > 9'd8) begin
+    if (dut.u_vdp.rnd_done && dut.u_vdp.vsrc == {1'b0, dut.u_vdp.rnd_line} &&
+        32'(dut.u_vdp.vdisp) < 224 && dut.u_vdp.hcnt > 9'd8) begin
       if (dut.u_vdp.hcnt >= 9'd28) rb_late_vis <= rb_late_vis + 1;
       if (32'(dut.u_vdp.hcnt) > rb_late_maxh) rb_late_maxh <= 32'(dut.u_vdp.hcnt);
       if (late_fh != 0)

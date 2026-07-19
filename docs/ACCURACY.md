@@ -102,7 +102,7 @@ NOT calibrate write timing against MAME here, deliberately.
 - YM level keeps the MAME stream calibration (x1.20); YM clocking is
   crystal-verified.
 
-### 3.3 Resolved (v12.2 + v14, 2026-07-19): top-of-frame and raster-split scroll staleness
+### 3.3 Resolved (v12.2 + v14 + v15, 2026-07-19): top-of-frame and raster-split scroll staleness, and the CRTC display window
 
 The full mechanism, established over 2026-07-11..18 by write-schedule
 logging in sim, pixel-exact analysis of MAME output, attract-mode PCB
@@ -206,11 +206,30 @@ hardware's DIP configuration, on-silicon register telemetry, and
 scripted hardware screenshot bursts of the artifact scenes compared
 against the PCB footage - plus the CRT.
 
-Related finding, unchanged: the game writes a line-indexed value to
-the CRTC horizontal register on EVERY line (655k writes per attract
-cycle) - a long-standing MAME mystery ("many CRTC writes" TODO). Both
-MAME and this core ignore the register; the footage shows real
-hardware has no visible geometric response to it either.
+**The final piece (v15): the CRTC vertical display window.** After
+v14, a 1-2 line residue remained at the top of the boss tail that
+PCB footage does not show - yet the write schedule proves the chip
+is TOLD to draw it (the game parks a per-frame outlier on line 1).
+The resolution is the long-ignored CRTC registers: the game programs
+the vertical timing through 78880 as indexed writes ({param[15:8],
+value[7:0]}, gated by the 788a0 unlock): param0=223 (active span),
+param2=233 (vsync start), param4=240 (vsync end), param7=2 (FIRST
+VISIBLE LINE) - 233/240 match standard NTSC vertical sync placement
+exactly, corroborating the decode. A real monitor therefore displays
+chip lines 2-225; lines 0-1 are a hidden work area, which is why the
+game freely parks its scratch accumulator and raster outliers there
+and why a PCB's top of screen is always clean. v15 implements the
+window: raster row R displays chip line R + 2, the render range
+extends to line 225, and every prior "top-line artifact" - clouds
+strip, boss stripe - is off-screen exactly as on real hardware
+(verified on CRT, 2026-07-19). This resolves MAME's "many CRTC
+writes" TODO for this game: MAME latches these registers, ignores
+them, and hardcodes visible = lines 0-223, so it displays the hidden
+work area - the actual mechanism behind the family of top-line bugs.
+The once-per-line writes to the horizontal register (655k per attract
+cycle, the other half of the mystery) happen with the unlock LOW and
+are no-ops on real silicon, consistent with the footage showing no
+geometric response.
 
 ### 3.4 Heavy-scene line budget: measured-zero, provable bound in progress
 

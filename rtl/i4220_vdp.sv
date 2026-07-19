@@ -207,11 +207,12 @@ module i4220_vdp #(
   // padded to 16 bits wide so hd_dpram byte-enable logic covers all bits
   logic [15:0] lb_rq_wide;
   wire  [11:0] lb_rq = lb_rq_wide[11:0];
+  logic [10:0] lb_scan_addr;   // assigned below vsrc (v15 window shift)
   hd_dpram #(.AW(11), .DW(16), .NUMWORDS(2048)) u_linebuf (
     .clk(clk),
     .addr_a({lb_bank, lb_x}), .d_a({4'd0, lb_pen}), .we_a(lb_we),
     .be_a(2'b11), .q_a(),
-    .addr_b({vdisp[1:0], hcnt[8:0]}), .q_b(lb_rq_wide)
+    .addr_b(lb_scan_addr), .q_b(lb_rq_wide)
   );
 
   // ------------------------------------------------------------------
@@ -309,19 +310,44 @@ module i4220_vdp #(
   wire line_start   = ce_pix && (32'(hcnt) == H_TOTAL - 1);
   wire [8:0] next_v = (vcnt == vlast) ? 9'd0 : vcnt + 9'd1;
 
-  // v12 display line: scan-out runs THREE lines behind the game
-  // timeline (190us, invisible). Measured on silicon (ladder probe,
-  // 2026-07-18): the game parks a scratch accumulator in the scroll
-  // registers across vblank and its frame-top write flurry lands
-  // during line 1, by (1,h160) - later than any simulation shows,
-  // because the SDRAM-fed 68000 runs the flurry slower than a PCB's
-  // zero-wait ROMs (MAME's CPU timing is late the same way, which is
-  // why it shows the same top-line artefact). Lines 0/1 therefore
-  // sample at (1,h200), past the measured landing; lines 2+ sample at
-  // their own h0 (verified clean on silicon). The 3-line lag funds
-  // all of it with room to spare. Output sync generation uses vdisp
-  // throughout; game-facing timing (vcnt, IRQs) is unchanged.
-  wire [8:0] vdisp = (vcnt >= 9'd3) ? vcnt - 9'd3 : vcnt + vlast - 9'd2;
+  // v12 display line: scan-out runs behind the game timeline
+  // (invisible). Measured on silicon (ladder probe, 2026-07-18): the
+  // game parks a scratch accumulator in the scroll registers across
+  // vblank and its frame-top write flurry lands during line 1, by
+  // (1,h160) - later than any simulation shows, because the SDRAM-fed
+  // 68000 runs the flurry slower than a PCB's zero-wait ROMs (MAME's
+  // CPU timing is late the same way, which is why it shows the same
+  // top-line artefact). Lines 0/1 therefore sample at (1,h200), past
+  // the measured landing; lines 2+ sample at their own h170. Output
+  // sync generation uses vdisp throughout; game-facing timing (vcnt,
+  // IRQs) is unchanged.
+  //
+  // v15 CRTC vertical window: the game programs the chip's vertical
+  // timing through 78880 as INDEXED writes ({param[15:8], val[7:0]},
+  // unlock-gated): param0=223 active span, param2=233 vsync start,
+  // param4=240 vsync end, param7=2 FIRST VISIBLE LINE. A real monitor
+  // therefore shows chip lines 2..225; lines 0/1 are a hidden work
+  // area (the scratch accumulator and the boss-zone outlier live
+  // there), which is why a PCB's top of screen is clean while MAME -
+  // which latches these registers but ignores them ("many CRTC
+  // writes" TODO) and hardcodes visible = 0..223 - shows the game's
+  // scratch.
+  //
+  // Formulation: the SOURCE-line schedule is mode-independent - chip
+  // line S always scans out at vcnt S+3, so every line keeps the
+  // proven v12 render margin and the 4-bank rotation never collides
+  // (a fixed 5-line lag at vfirst=0 lapped the banks - caught in
+  // smoke sim, frames 0-102 fully stale). The RASTER window (vdisp,
+  // which drives de/vsync) sits vfirst lines later, so raster row R
+  // shows chip line R + vfirst; total display lag = 3 + vfirst lines
+  // (317us at vfirst=2, invisible). Kicks cover [2, 224+vfirst).
+  logic [7:0] crtc_vfirst;     // param 7 live (register write block)
+  logic [7:0] crtc_vfirst_q;   // frame-latched copy (all consumers)
+  wire [8:0] vsrc  = (vcnt >= 9'd3) ? vcnt - 9'd3 : vcnt + vlast - 9'd2;
+  wire [8:0] vdisp = (vsrc >= 9'(crtc_vfirst_q))
+                   ? vsrc - 9'(crtc_vfirst_q)
+                   : vsrc + vlast + 9'd1 - 9'(crtc_vfirst_q);
+  assign lb_scan_addr = {vsrc[1:0], hcnt[8:0]};
 
   // ------------------------------------------------------------------
   // IRQ cause events
@@ -486,10 +512,13 @@ module i4220_vdp #(
       kf_cnt <= '0;
       pop_pend <= 1'b0;
       frame_par <= 1'b0;
+      crtc_vfirst_q <= 8'd0;
     end else begin
       rnd_start <= 1'b0;
-      if (ce_pix && hcnt == 9'd0 && vcnt == vlast - 9'd1)
+      if (ce_pix && hcnt == 9'd0 && vcnt == vlast - 9'd1) begin
         frame_par <= ~frame_par;
+        crtc_vfirst_q <= crtc_vfirst;   // window stable per frame
+      end
       // queue lines 2..223 at their own h170 (past the measured write
       // slip); lines 0 and 1 queue at (1,h200)/(1,h208), after the
       // measured frame-top landing
@@ -510,7 +539,9 @@ module i4220_vdp #(
         do_push = 1'b0; push_line = vcnt;
         push_y0 = rs_sw_y[0]; push_y2 = rs_sw_y[2];
         if (ce_pix) begin
-          if (hcnt == 9'd170 && 32'(vcnt) >= 2 && 32'(vcnt) < V_VIS)
+          // v15: kick range covers the shifted window [2, 224+vfirst)
+          if (hcnt == 9'd170 && 32'(vcnt) >= 2 &&
+              32'(vcnt) < V_VIS + 32'(crtc_vfirst_q))
             do_push = 1'b1;
           if (vcnt == 9'd1) begin
             if (hcnt == 9'd200) begin
@@ -952,6 +983,7 @@ module i4220_vdp #(
       r_scr_xoff <= '0; r_scr_yoff <= '0;
       r_ctrl <= '0; r_rombank <= '0;
       r_crtc_unlock <= 1'b0;
+      crtc_vfirst <= 8'd0;
       bl_start <= 1'b0;
       for (int i = 0; i < 6; i++) begin
         r_window[i] <= '0;
@@ -970,7 +1002,15 @@ module i4220_vdp #(
           19'h79712, 19'h78812: r_bg        <= 12'(comb16({4'd0, r_bg}));
           19'h78850: r_scr_yoff <= comb16(r_scr_yoff);
           19'h78852: r_scr_xoff <= comb16(r_scr_xoff);
-          19'h78880: if (r_crtc_unlock) r_crtc_v <= comb16(r_crtc_v);
+          19'h78880: if (r_crtc_unlock) begin
+            r_crtc_v <= comb16(r_crtc_v);
+            // v15: indexed vertical-timing write; param 7 = first
+            // visible line (game programs 2 - see vdisp comment).
+            // Clamp to a sane range so a stray value cannot push the
+            // window off the rendered line range.
+            if (comb16(r_crtc_v) >= 16'h0700 && comb16(r_crtc_v) <= 16'h070F)
+              crtc_vfirst <= 8'(comb16(r_crtc_v) & 16'h000F);
+          end
           19'h78890: if (r_crtc_unlock) r_crtc_h <= comb16(r_crtc_h);
           19'h788A0: r_crtc_unlock <= i_wdata[0];
           19'h788AA: r_rombank <= comb16(r_rombank);
@@ -1106,7 +1146,7 @@ module i4220_vdp #(
     end else begin
       if (rnd_done)
         bank_tag[rnd_line[1:0]] <= {cur_par, rnd_line};
-      so_stale <= (bank_tag[vdisp[1:0]] != {frame_par, vdisp[7:0]});
+      so_stale <= (bank_tag[vsrc[1:0]] != {frame_par, vsrc[7:0]});
     end
   end
 
