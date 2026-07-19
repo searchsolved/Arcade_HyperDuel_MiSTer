@@ -163,3 +163,42 @@ download: $(BUILD)/obj_dl/Vtb_download
 
 clean:
 	rm -rf $(BUILD)
+
+# magerror branch: IKAOPLL (YM2413) standalone smoke at the
+# integration shape (80 MHz clk + fractional 3.579545 MHz cen)
+$(BUILD)/obj_opll/Vtb_opll_smoke: tb/tb_opll_smoke.sv ../rtl/vendor/ikaopll/IKAOPLL.v
+	$(VERILATOR) --binary --timing -Wno-UNUSEDSIGNAL -Wno-WIDTHEXPAND \
+		-Wno-WIDTHTRUNC --timescale 1ns/1ps --Mdir $(BUILD)/obj_opll \
+		../rtl/vendor/ikaopll/IKAOPLL.v ../rtl/vendor/ikaopll/IKAOPLL_modules/*.v \
+		tb/tb_opll_smoke.sv --top-module tb_opll_smoke
+
+.PHONY: opll-smoke
+opll-smoke: $(BUILD)/obj_opll/Vtb_opll_smoke
+	$(BUILD)/obj_opll/Vtb_opll_smoke | grep OPLL
+
+# magerror full-system build (GAME_MAGERROR=1, includes IKAOPLL)
+OPLL := ../rtl/vendor/ikaopll
+$(BUILD)/obj_sys_me/Vtb_system: tb/tb_system.sv tb/sdram_model.sv ../rtl/hyprduel_sys.sv ../rtl/hyprduel_sdram.sv ../rtl/i4220_vdp.sv ../rtl/i4220_render.sv ../rtl/i4220_blitter.sv ../rtl/hd_dpram.sv ../rtl/hd_tdpram.sv $(FX68K)/fx68k.sv $(FX68K)/fx68kAlu.sv $(OPLL)/IKAOPLL.v
+	cp -f $(FX68K)/microrom.mem $(FX68K)/nanorom.mem .
+	$(VERILATOR) --binary --timing -Wno-fatal --timescale 1ns/1ps \
+		$(if $(PIXDIV12),+define+PIXDIV12) \
+		+define+GAME_MAGERROR \
+		--Mdir $(BUILD)/obj_sys_me -I../rtl/vendor/jt51/hdl \
+		$(FX68K)/fx68k.sv $(FX68K)/fx68kAlu.sv $(FX68K)/uaddrPla.sv \
+		$(wildcard ../rtl/vendor/jt51/hdl/jt51*.v) \
+		$(wildcard ../rtl/vendor/jt6295/hdl/*.v) \
+		$(OPLL)/IKAOPLL.v $(wildcard $(OPLL)/IKAOPLL_modules/*.v) \
+		../rtl/i4220_render.sv ../rtl/i4220_blitter.sv ../rtl/i4220_vdp.sv \
+		../rtl/hd_dpram.sv ../rtl/hd_tdpram.sv \
+		../rtl/hyprduel_sys.sv ../rtl/hyprduel_sdram.sv tb/sdram_model.sv \
+		tb/tb_system.sv --top-module tb_system
+
+.PHONY: boot-magerror
+boot-magerror: $(BUILD)/obj_sys_me/Vtb_system
+	mkdir -p $(BUILD)/boot_magerror$(if $(SDRAM),_sdram)
+	$(BUILD)/obj_sys_me/Vtb_system +MAINROM=$(BUILD)/magerror_mainrom.hex \
+		+GFXROM=$(BUILD)/magerror_gfxrom.hex +GFXSIZE=4194304 \
+		+OKIROM=$(BUILD)/magerror_okirom.hex \
+		+OUTDIR=$(BUILD)/boot_magerror$(if $(SDRAM),_sdram) \
+		+FRAMES=$(or $(FRAMES),600) +DUMPEVERY=30 \
+		$(if $(SDRAM),+SDRAM=$(SDRAM)) $(PLUSARGS)

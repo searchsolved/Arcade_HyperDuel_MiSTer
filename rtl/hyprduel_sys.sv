@@ -11,7 +11,8 @@
 module hyprduel_sys #(
     parameter int GFX_AW = 22,
     parameter int P_PIXDIV = 6,     // sys clocks per pixel (sim speed)
-    parameter int P_CPUDIV = 8      // sys clocks per 68k clock
+    parameter int P_CPUDIV = 8,     // sys clocks per 68k clock
+    parameter bit GAME_MAGERROR = 0 // 0 = Hyper Duel, 1 = Magical Error
 ) (
     input  logic clk,
     input  logic rst_n,
@@ -174,7 +175,7 @@ module hyprduel_sys #(
 
   i4220_vdp #(.GFX_AW(GFX_AW), .P_PIXDIV(P_PIXDIV),
               .P_BIT5_CYCLES(2500 * P_PIXDIV * 20 / 3),
-              .P_IRQ_LINE_MASK(8'h02)) u_vdp (
+              .P_IRQ_LINE_MASK(GAME_MAGERROR ? 8'h01 : 8'h02)) u_vdp (
     // 2500 us at the sys clock implied by P_PIXDIV vs the 6.667 MHz pixel
     .clk(clk), .rst_n(rst_n),
     .i_cs(vdp_cs), .i_addr(vdp_addr), .i_rnw(vdp_rnw_r),
@@ -204,34 +205,88 @@ module hyprduel_sys #(
   );
 
 
-  // YM2151 (jt51) at sub 0x400000-0x400003, IRQ -> sub IPL1
+  // Sound chip: jt51 (YM2151) for Hyper Duel, IKAOPLL (YM2413) for magerror
   // ------------------------------------------------------------------
-  localparam int P_YMDIV = (P_PIXDIV * 5) / 3;   // 4 MHz from the sys clock
-  logic [$clog2(P_YMDIV)-1:0] ymdiv;
-  logic ym_phase;
-  wire ym_cen    = (32'(ymdiv) == 0);
-  wire ym_cen_p1 = ym_cen && ym_phase;
-  always_ff @(posedge clk)
-    if (!rst_n) begin
-      ymdiv <= '0;
-      ym_phase <= 1'b0;
-    end else begin
-      ymdiv <= (32'(ymdiv) == P_YMDIV - 1) ? '0 : ymdiv + 1'b1;
-      if (ym_cen) ym_phase <= ~ym_phase;
-    end
-
   logic       ym_cs_n, ym_wr_n, ym_a0;
   logic [7:0] ym_din;
   logic [7:0] ym_dout;
   logic       ym_irq_n;
+  logic signed [15:0] ym_xl, ym_xr;
 
-  jt51 u_ym (
-    .rst(!rst_n), .clk(clk), .cen(ym_cen), .cen_p1(ym_cen_p1),
-    .cs_n(ym_cs_n), .wr_n(ym_wr_n), .a0(ym_a0), .din(ym_din),
-    .dout(ym_dout),
-    .ct1(), .ct2(), .irq_n(ym_irq_n),
-    .sample(), .left(), .right(), .xleft(ym_xl), .xright(ym_xr)
-  );
+  generate if (!GAME_MAGERROR) begin : gen_jt51
+    localparam int P_YMDIV = (P_PIXDIV * 5) / 3;   // 4 MHz from the sys clock
+    logic [$clog2(P_YMDIV)-1:0] ymdiv;
+    logic ym_phase;
+    wire ym_cen    = (32'(ymdiv) == 0);
+    wire ym_cen_p1 = ym_cen && ym_phase;
+    always_ff @(posedge clk)
+      if (!rst_n) begin
+        ymdiv <= '0;
+        ym_phase <= 1'b0;
+      end else begin
+        ymdiv <= (32'(ymdiv) == P_YMDIV - 1) ? '0 : ymdiv + 1'b1;
+        if (ym_cen) ym_phase <= ~ym_phase;
+      end
+
+    jt51 u_ym (
+      .rst(!rst_n), .clk(clk), .cen(ym_cen), .cen_p1(ym_cen_p1),
+      .cs_n(ym_cs_n), .wr_n(ym_wr_n), .a0(ym_a0), .din(ym_din),
+      .dout(ym_dout),
+      .ct1(), .ct2(), .irq_n(ym_irq_n),
+      .sample(), .left(), .right(), .xleft(ym_xl), .xright(ym_xr)
+    );
+  end else begin : gen_opll
+    // IKAOPLL at 3.579545 MHz via phase-accumulator cen from 80 MHz sys clk
+    logic        opll_cen;
+    logic [26:0] opll_acc;
+    always_ff @(posedge clk)
+      if (!rst_n) begin opll_acc <= '0; opll_cen <= 1'b0; end
+      else begin
+        if (opll_acc + 27'd3579545 >= 27'd80000000) begin
+          opll_acc <= opll_acc + 27'd3579545 - 27'd80000000;
+          opll_cen <= 1'b1;
+        end else begin
+          opll_acc <= opll_acc + 27'd3579545;
+          opll_cen <= 1'b0;
+        end
+      end
+
+    wire signed [15:0] opll_acc_out;
+    wire               opll_acc_strb;
+
+    IKAOPLL #(
+      .FULLY_SYNCHRONOUS        (1),
+      .FAST_RESET               (0),
+      .ALTPATCH_CONFIG_MODE     (0),
+      .USE_PIPELINED_MULTIPLIER (1)
+    ) u_opll (
+      .i_XIN_EMUCLK         (clk),
+      .o_XOUT               (),
+      .i_phiM_PCEN_n        (~opll_cen),
+      .i_IC_n               (rst_n),
+      .i_ALTPATCH_EN        (1'b0),
+      .i_CS_n               (ym_cs_n),
+      .i_WR_n               (ym_wr_n),
+      .i_A0                 (ym_a0),
+      .i_D                  (ym_din),
+      .o_D                  (ym_dout[1:0]),
+      .o_D_OE               (),
+      .o_DAC_EN_MO          (),
+      .o_DAC_EN_RO          (),
+      .o_IMP_NOFLUC_SIGN    (),
+      .o_IMP_NOFLUC_MAG     (),
+      .o_IMP_FLUC_SIGNED_MO (),
+      .o_IMP_FLUC_SIGNED_RO (),
+      .i_ACC_SIGNED_MOVOL   (5'sd2),
+      .i_ACC_SIGNED_ROVOL   (5'sd3),
+      .o_ACC_SIGNED_STRB    (opll_acc_strb),
+      .o_ACC_SIGNED         (opll_acc_out)
+    );
+    assign ym_dout[7:2] = 6'd0;
+    assign ym_irq_n = 1'b1;       // YM2413 has no IRQ output
+    assign ym_xl = opll_acc_out;
+    assign ym_xr = opll_acc_out;   // mono chip; both channels = same
+  end endgenerate
 
   // ------------------------------------------------------------------
   // OKI M6295 (jt6295) at sub 0x400004-0x400005, samples from oki_rom
@@ -266,11 +321,10 @@ module hyprduel_sys #(
   // so OKI drops by 2.33x. MAME's 0.57 route gain is ~3x hot vs the
   // real board. 26-bit intermediates: the old 18-bit ones WRAPPED for
   // any sample above ~640, mangling the output (docs/qa_checklist.md).
-  logic signed [15:0] ym_xl, ym_xr;
   always_comb begin
     logic signed [25:0] ymm, okim, mix;
     ymm  = (26'(ym_xl) + 26'(ym_xr)) >>> 1;
-    ymm  = (ymm * 26'sd307) >>> 8;              // x1.20
+    ymm  = GAME_MAGERROR ? ymm : ((ymm * 26'sd307) >>> 8);  // hyprduel: x1.20; magerror: TBD
     okim = (26'(oki_snd) <<< 2);
     okim = (okim * 26'sd768) >>> 8;             // x3.00: MEASURED from two
     // independent PCB recordings. Method: per-STFT-bin NNLS of the
@@ -339,9 +393,33 @@ module hyprduel_sys #(
     end
   end
 
+  // magerror: 968 Hz periodic timer drives sub IPL1 instead of the YM IRQ
+  logic me_timer_irq;
+  generate if (GAME_MAGERROR) begin : gen_me_timer
+    localparam int TIMER_DIV = 80_000_000 / 968;
+    logic [$clog2(TIMER_DIV)-1:0] tcnt;
+    always_ff @(posedge clk)
+      if (!rst_n || sub_rst) begin
+        tcnt <= '0; me_timer_irq <= 1'b0;
+      end else begin
+        if (32'(tcnt) == TIMER_DIV - 1) begin
+          tcnt <= '0;
+          me_timer_irq <= 1'b1;
+        end else begin
+          tcnt <= tcnt + 1'b1;
+          if (s_iack && s_a[3:1] == 3'd1) me_timer_irq <= 1'b0;
+        end
+      end
+  end else begin : gen_no_me_timer
+    assign me_timer_irq = 1'b0;
+  end endgenerate
+
   always_comb begin
     m_ipl = vdp_irq ? 3'd3 : (vbl_pend ? 3'd2 : 3'd0);
-    s_ipl = sub_cmd_pend ? 3'd2 : (!ym_irq_n ? 3'd1 : 3'd0);
+    if (GAME_MAGERROR)
+      s_ipl = sub_cmd_pend ? 3'd2 : (me_timer_irq ? 3'd1 : 3'd0);
+    else
+      s_ipl = sub_cmd_pend ? 3'd2 : (!ym_irq_n ? 3'd1 : 3'd0);
   end
 
   assign m_vpan = ~m_iack;   // autovector all interrupt acks
@@ -353,12 +431,20 @@ module hyprduel_sys #(
   // regions
   wire [23:0] m_ba = {m_a, 1'b0};
   wire m_sel_rom  = (m_ba < 24'h080000);
-  wire m_sel_vdp  = (m_ba >= 24'h400000 && m_ba < 24'h480000);
-  wire m_sel_ctl  = (m_ba >= 24'h800000 && m_ba < 24'h800002);
-  wire m_sel_sr1  = (m_ba >= 24'hC00000 && m_ba < 24'hC08000);
+  wire m_sel_vdp  = GAME_MAGERROR
+                    ? (m_ba >= 24'h800000 && m_ba < 24'h880000)
+                    : (m_ba >= 24'h400000 && m_ba < 24'h480000);
+  wire m_sel_ctl  = GAME_MAGERROR
+                    ? (m_ba >= 24'h400000 && m_ba < 24'h400002)
+                    : (m_ba >= 24'h800000 && m_ba < 24'h800002);
+  wire m_sel_sr1  = GAME_MAGERROR
+                    ? (m_ba >= 24'hC00000 && m_ba < 24'hC20000)
+                    : (m_ba >= 24'hC00000 && m_ba < 24'hC08000);
   wire m_sel_io   = (m_ba >= 24'hE00000 && m_ba < 24'hE00008);
   wire m_sel_sr2  = (m_ba >= 24'hFE0000 && m_ba < 24'hFE4000);
   wire m_sel_sr3  = (m_ba >= 24'hFE4000);
+  // magerror: shared1 goes through SDRAM instead of BRAM
+  wire m_sel_sram = m_sel_sr3 || (GAME_MAGERROR && m_sel_sr1);
 
   wire m_strobe = !m_asn && !(m_udsn && m_ldsn);
   wire [15:0] m_wmask = {{8{~m_udsn}}, {8{~m_ldsn}}};
@@ -406,7 +492,7 @@ module hyprduel_sys #(
                 o_mrom_rd   <= 1'b1;
                 o_mrom_addr <= m_ba[18:1];
                 mbst <= MB_ROM;
-              end else if (m_sel_sr3) begin
+              end else if (m_sel_sram) begin
                 sr3_m_req <= 1'b1;
                 mbst <= MB_SR3;
               end else
@@ -422,9 +508,9 @@ module hyprduel_sys #(
                   default: ;
                 endcase
               end
-              if (m_sel_sr3) begin
+              if (m_sel_sram) begin
                 sr3_m_req <= 1'b1;
-                mbst <= MB_SR3;        // sr3 writes go through SDRAM
+                mbst <= MB_SR3;        // shared RAM writes go through SDRAM
               end else
                 mbst <= MB_ACK;
             end
@@ -475,11 +561,20 @@ module hyprduel_sys #(
   wire [23:0] s_ba = {s_a, 1'b0};
   wire s_sel_vec  = (s_ba < 24'h004000);                       // shared1 shadow
   wire s_sel_ro3  = (s_ba >= 24'h004000 && s_ba < 24'h020000); // shared3 RO shadow
-  wire s_sel_ym   = (s_ba >= 24'h400000 && s_ba < 24'h400004); // jt51
-  wire s_sel_snd  = (s_ba >= 24'h400004 && s_ba < 24'h400010); // OKI stub
-  wire s_sel_sr1  = (s_ba >= 24'hC00000 && s_ba < 24'hC08000);
+  wire s_sel_ym   = GAME_MAGERROR
+                    ? (s_ba >= 24'h800000 && s_ba < 24'h800004) // IKAOPLL
+                    : (s_ba >= 24'h400000 && s_ba < 24'h400004); // jt51
+  wire s_sel_snd  = GAME_MAGERROR
+                    ? (s_ba >= 24'h800004 && s_ba < 24'h800010) // OKI (magerror)
+                    : (s_ba >= 24'h400004 && s_ba < 24'h400010); // OKI (hyprduel)
+  wire s_sel_sr1  = GAME_MAGERROR
+                    ? (s_ba >= 24'hC00000 && s_ba < 24'hC20000)
+                    : (s_ba >= 24'hC00000 && s_ba < 24'hC08000);
   wire s_sel_sr2  = (s_ba >= 24'hFE0000 && s_ba < 24'hFE4000);
   wire s_sel_sr3  = (s_ba >= 24'hFE4000);
+  // magerror: shared1 + vector shadow go through SDRAM
+  wire s_sel_sram = (s_sel_ro3 || s_sel_sr3) ||
+                    (GAME_MAGERROR && (s_sel_vec || s_sel_sr1));
 
   wire s_strobe = !s_asn && !(s_udsn && s_ldsn);
   wire [15:0] s_wmask = {{8{~s_udsn}}, {8{~s_ldsn}}};
@@ -546,7 +641,7 @@ module hyprduel_sys #(
           sr3_s_req <= 1'b0;
           if (s_strobe && !s_iack) begin
             if (s_rw) begin
-              if (s_sel_ro3 || s_sel_sr3) begin
+              if (s_sel_sram) begin
                 if (sr3c_match) begin
                   s_rdata_q <= sr3c_rdata;
                   sbst <= SB_ACK;
@@ -557,7 +652,7 @@ module hyprduel_sys #(
               end else
                 sbst <= SB_WAIT;
             end else begin
-              if (s_sel_sr3) begin
+              if (s_sel_sram) begin
                 sr3_s_req <= 1'b1;
                 sbst <= SB_SR3;
               end else
@@ -605,35 +700,43 @@ module hyprduel_sys #(
 
   // ------------------------------------------------------------------
   // shared RAM TDP ports (port A = main, port B = sub)
-  // shared1/shared2 stay in BRAM; shared3 moved to SDRAM
+  // shared1: BRAM for hyprduel (32KB), SDRAM for magerror (128KB, via sr3 port)
+  // shared2: BRAM for both (16KB)
+  // shared3: SDRAM for both (112KB)
   // ------------------------------------------------------------------
-  logic [13:0] sr1_addr_a, sr1_addr_b;
   logic [12:0] sr2_addr_a, sr2_addr_b;
-  logic        sr1_we_a, sr1_we_b, sr2_we_a, sr2_we_b;
+  logic        sr2_we_a, sr2_we_b;
   logic [15:0] sr1_q_a, sr1_q_b, sr2_q_a, sr2_q_b;
 
   wire m_wr_commit = (mbst == MB_IDLE) && m_strobe && !m_sel_vdp
                      && !m_iack && !m_rw;
   wire s_wr_commit = (sbst == SB_IDLE) && s_strobe && !s_iack && !s_rw;
 
-  assign sr1_addr_a = m_ba[14:1];
   assign sr2_addr_a = m_ba[13:1];
-  assign sr1_we_a = m_wr_commit && m_sel_sr1;
   assign sr2_we_a = m_wr_commit && m_sel_sr2;
-
-  assign sr1_addr_b = s_sel_vec ? {2'b00, s_ba[13:1]} : s_ba[14:1];
   assign sr2_addr_b = s_ba[13:1];
-  assign sr1_we_b = s_wr_commit && (s_sel_vec || s_sel_sr1);
   assign sr2_we_b = s_wr_commit && s_sel_sr2;
 
+  generate if (!GAME_MAGERROR) begin : gen_sr1_bram
+    logic [13:0] sr1_addr_a, sr1_addr_b;
+    logic        sr1_we_a, sr1_we_b;
 
-  hd_tdpram #(.AW(14), .DW(16)) u_shared1 (
-    .clk(clk),
-    .addr_a(sr1_addr_a), .d_a(m_dout), .we_a(sr1_we_a),
-    .be_a({~m_udsn, ~m_ldsn}), .q_a(sr1_q_a),
-    .addr_b(sr1_addr_b), .d_b(s_dout), .we_b(sr1_we_b),
-    .be_b({~s_udsn, ~s_ldsn}), .q_b(sr1_q_b)
-  );
+    assign sr1_addr_a = m_ba[14:1];
+    assign sr1_we_a = m_wr_commit && m_sel_sr1;
+    assign sr1_addr_b = s_sel_vec ? 14'(s_ba[13:1]) : s_ba[14:1];
+    assign sr1_we_b = s_wr_commit && (s_sel_vec || s_sel_sr1);
+
+    hd_tdpram #(.AW(14), .DW(16)) u_shared1 (
+      .clk(clk),
+      .addr_a(sr1_addr_a), .d_a(m_dout), .we_a(sr1_we_a),
+      .be_a({~m_udsn, ~m_ldsn}), .q_a(sr1_q_a),
+      .addr_b(sr1_addr_b), .d_b(s_dout), .we_b(sr1_we_b),
+      .be_b({~s_udsn, ~s_ldsn}), .q_b(sr1_q_b)
+    );
+  end else begin : gen_sr1_sdram
+    assign sr1_q_a = '0;
+    assign sr1_q_b = '0;
+  end endgenerate
 
   hd_tdpram #(.AW(13), .DW(16)) u_shared2 (
     .clk(clk),
@@ -655,13 +758,20 @@ module hyprduel_sys #(
   logic sr3_m_req, sr3_s_req;      // level-held by each FSM while in MB_SR3/SB_SR3
   logic sr3_grant_s;               // 0 = main granted (or idle), 1 = sub granted
 
-  // address computation (reuses the original mapping)
-  wire [16:0] sr3_m_addr = m_ba[17:1] - 17'h2000;
-  // shadow 0x4000-0x1FFFF aliases 0xFE4000-0xFFFFFF (same sr3 words):
-  // shadow byte A corresponds to main byte (A - 0x4000 + 0xFE4000),
-  // so sr3 word = s_ba[17:1] + 0xE000 for the shadow window
-  wire [16:0] sr3_s_addr = s_sel_ro3 ? (s_ba[17:1] + 17'hE000)
-                                     : (s_ba[17:1] - 17'h2000);
+  // address computation: sr3 word address within the SDRAM sr3 region.
+  // shared3 (FE4000+): word = byte[17:1] - 0x2000 -> words 0x10000..0x1DFFF
+  // shared3 RO shadow (4000-1FFFF): word = byte[17:1] + 0xE000 -> same range
+  // shared1 (C00000+, magerror): word = byte[17:1] -> words 0x00000..0x0FFFF
+  // shared1 vector shadow (0000-3FFF, magerror): same as shared1 direct
+  // The two ranges don't overlap, so both fit in the existing 17-bit port.
+  wire [16:0] sr3_m_addr = (GAME_MAGERROR && m_sel_sr1)
+                           ? m_ba[17:1]
+                           : (m_ba[17:1] - 17'h2000);
+  wire [16:0] sr3_s_addr =
+    (GAME_MAGERROR && (s_sel_vec || s_sel_sr1))
+      ? s_ba[17:1]
+      : (s_sel_ro3 ? (s_ba[17:1] + 17'hE000)
+                   : (s_ba[17:1] - 17'h2000));
 
   // grant decided while idle, held for the whole op; o_sr3_req is
   // registered so the addr/wdata/we mux is stable before the SDRAM

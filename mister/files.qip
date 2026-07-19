@@ -32,6 +32,18 @@ set_global_assignment -name VERILOG_FILE ../rtl/vendor/jt6295/hdl/jt6295_serial.
 set_global_assignment -name VERILOG_FILE ../rtl/vendor/jt6295/hdl/jt6295_sh_rst.v
 set_global_assignment -name SEARCH_PATH ../rtl/vendor/jt6295/hdl
 
+# IKAOPLL (YM2413, used by magerror; compiled but unused when GAME_MAGERROR=0
+# since the generate block is dead-code-eliminated)
+set_global_assignment -name VERILOG_FILE ../rtl/vendor/ikaopll/IKAOPLL.v
+set_global_assignment -name VERILOG_FILE ../rtl/vendor/ikaopll/IKAOPLL_modules/IKAOPLL_dac.v
+set_global_assignment -name VERILOG_FILE ../rtl/vendor/ikaopll/IKAOPLL_modules/IKAOPLL_eg.v
+set_global_assignment -name VERILOG_FILE ../rtl/vendor/ikaopll/IKAOPLL_modules/IKAOPLL_lfo.v
+set_global_assignment -name VERILOG_FILE ../rtl/vendor/ikaopll/IKAOPLL_modules/IKAOPLL_op.v
+set_global_assignment -name VERILOG_FILE ../rtl/vendor/ikaopll/IKAOPLL_modules/IKAOPLL_pg.v
+set_global_assignment -name VERILOG_FILE ../rtl/vendor/ikaopll/IKAOPLL_modules/IKAOPLL_primitives.v
+set_global_assignment -name VERILOG_FILE ../rtl/vendor/ikaopll/IKAOPLL_modules/IKAOPLL_reg.v
+set_global_assignment -name VERILOG_FILE ../rtl/vendor/ikaopll/IKAOPLL_modules/IKAOPLL_timinggen.v
+
 # core PLL: 80 MHz system + 80 MHz -90deg for SDRAM_CLK
 set_global_assignment -name VERILOG_FILE pll.v
 set_global_assignment -name VERILOG_FILE pll/pll_0002.v

@@ -76,8 +76,10 @@ module tb_system;
   logic [15:0] ctl_sr3_rdata;
   logic        ctl_sr3_ack;
 
-  // shared3 behavioral server (non-SDRAM path)
-  logic [15:0] shared3_mem [0:57343];
+  // shared RAM behavioral server (non-SDRAM path)
+  // Covers shared3 (words 0x10000-0x1DFFF) and, for magerror, shared1
+  // (words 0x00000-0x0FFFF) via the same sr3 port
+  logic [15:0] shared3_mem [0:122879];
   logic        sr3_p1;
   logic [15:0] sr3_rdata_ideal;
   logic        sr3_ack_ideal;
@@ -157,7 +159,13 @@ module tb_system;
         inp_pending = 1;
     end
   end
-  hyprduel_sys #(.GFX_AW(GFX_AW), .P_PIXDIV(PIXDIV)) dut (
+`ifdef GAME_MAGERROR
+  localparam bit LP_MAGERROR = 1;
+`else
+  localparam bit LP_MAGERROR = 0;
+`endif
+  hyprduel_sys #(.GFX_AW(GFX_AW), .P_PIXDIV(PIXDIV),
+                 .GAME_MAGERROR(LP_MAGERROR)) dut (
     .clk(clk), .rst_n(rst_n_sys),
     .o_hs(hs), .o_vs(vs), .o_de(de), .o_ce_pix(ce_pix),
     .o_hblank(), .o_vblank(),

@@ -40,3 +40,11 @@ field reference into part-select arithmetic in the Quartus front end.
 Upstream unpacked structs are what every other MiSTer fx68k core
 compiles. Verilator sees the packed form, unchanged, so sim behaviour
 is bit-identical.
+
+## ikaopll vendored (2026-07-19, magerror branch)
+IKAOPLL (cycle-accurate, die-shot based YM2413) by Sehyeon Kim
+(ika-musume), BSD-2-Clause, vendored UNMODIFIED from upstream commit
+4d393238d1be33ea428a454956270504f037dfa3 (2025-01-04). Selected over
+jtopl's jt2413 for the die-derived cycle accuracy; licence sits fine
+beside the GPL cores (BSD-2 is GPL-compatible). Verilator 5.050 lint:
+0 errors, 16 benign width warnings, no UNOPTFLAT/BLKANDNBLK/LATCH.
