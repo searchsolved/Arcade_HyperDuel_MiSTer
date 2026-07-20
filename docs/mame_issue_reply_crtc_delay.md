@@ -1,4 +1,7 @@
-# Reply draft: mamedev/mame#15732, answer to angelosa on the 655k writes
+# Reply: mamedev/mame#15732, answer to angelosa on the 655k writes
+
+**POSTED 2026-07-20 (tightened version):**
+https://github.com/mamedev/mame/issues/15732#issuecomment-5023650912
 
 Paste-ready reply below the line. Evidence produced 2026-07-20 with
 sim/mame/tap_crtc_horz.lua / horz2 / horz3 / tap_scrctl.lua (PC-stamped
